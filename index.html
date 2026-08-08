@@ -1,26 +1,38 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <meta charset="UTF-8">
-    <title>Home Agent Receiver</title>
-    <script src="//www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js"></script>
-    <script>
-	cast.framework.CastReceiverContext
-	    .getInstance()
-	    .start();
-    </script>
+<meta charset="utf-8">
+<style>
+body{margin:0;background:#000;overflow:hidden}
+img{width:100vw;height:100vh;object-fit:contain;display:block}
+.tip {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    color: #ffffff;
+    font-size: 60px;
+    font-weight: 800;
+    font-family: system-ui, sans-serif;
+    text-shadow: 2px 2px 6px #000, 0 0 12px #000;
+    z-index: 999;
+    pointer-events: none;
+}
+</style>
 </head>
+<body>
+<img id="pic">
+<div class="tip">my home agent</div>
+<script src="https://www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js"></script>
+<script>
+const ctx = cast.framework.CastReceiverContext.getInstance();
+const img = document.getElementById("pic");
+const NAMESPACE = "urn:x-cast:local.image";
 
-<body style="margin:0;background:black;color:white;">
-    <div style="
-        width:100vw;
-        height:100vh;
-        display:flex;
-        align-items:center;
-        justify-content:center;
-        font-size:48px;
-    ">
-        Hello Home Agent
-    </div>
+ctx.addCustomMessageListener(NAMESPACE, msg => {
+  img.src = msg.data.url;
+});
+ctx.start();
+</script>
 </body>
 </html>
