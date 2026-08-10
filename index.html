@@ -1,38 +1,83 @@
 <!DOCTYPE html>
-<html>
+<html lang="zh-CN">
 <head>
-<meta charset="utf-8">
-<style>
-body{margin:0;background:#000;overflow:hidden}
-img{width:100vw;height:100vh;object-fit:contain;display:block}
-.tip {
-    position: fixed;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
-    color: #ffffff;
-    font-size: 60px;
-    font-weight: 800;
-    font-family: system-ui, sans-serif;
-    text-shadow: 2px 2px 6px #000, 0 0 12px #000;
-    z-index: 999;
-    pointer-events: none;
-}
-</style>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chromecast 图片投屏接收端</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            width: 100vw;
+            height: 100vh;
+            background: #000;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+            color: #fff;
+            font-family: system-ui, sans-serif;
+        }
+        #pic {
+            max-width: 95vw;
+            max-height: 85vh;
+            object-fit: contain;
+        }
+        .loading-tip {
+            font-size: 22px;
+            margin-bottom: 20px;
+            display: none;
+        }
+        .tip {
+            position: fixed;
+            bottom: 30px;
+            font-size: 16px;
+            opacity: 0.7;
+        }
+    </style>
 </head>
 <body>
-<img id="pic">
-<div class="tip">my home agent</div>
-<script src="https://www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js"></script>
-<script>
-const ctx = cast.framework.CastReceiverContext.getInstance();
-const img = document.getElementById("pic");
-const NAMESPACE = "urn:x-cast:local.image";
+    <!-- 加载提示 -->
+    <div class="loading-tip" id="loadingText">图片正在下载中，请稍等</div>
+    <img id="pic">
+    <div class="tip">my home agent</div>
 
-ctx.addCustomMessageListener(NAMESPACE, msg => {
-  img.src = msg.data.url;
-});
-ctx.start();
-</script>
+    <script src="https://www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js"></script>
+    <script>
+        const ctx = cast.framework.CastReceiverContext.getInstance();
+        const img = document.getElementById("pic");
+        const loadingText = document.getElementById("loadingText");
+        const NAMESPACE = "urn:x-cast:local.image";
+
+        // 接收自定义投屏消息
+        ctx.addCustomMessageListener(NAMESPACE, msg => {
+            const imgUrl = msg.data.url;
+            if (!imgUrl) return;
+
+            // 开始加载：显示文字、清空原图
+            loadingText.textContent = "图片正在下载中，请稍等";
+            loadingText.style.display = "block";
+            img.src = "";
+
+            // 图片加载完成回调
+            img.onload = () => {
+                loadingText.style.display = "none";
+            };
+
+            // 图片加载失败处理
+            img.onerror = () => {
+                loadingText.textContent = "图片加载失败，请重试";
+            };
+
+            // 赋值图片地址，开始拉取资源
+            img.src = imgUrl;
+        });
+
+        ctx.start();
+    </script>
 </body>
 </html>
