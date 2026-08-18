@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chromecast 图片投屏接收端</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            width: 100vw;
+            height: 100vh;
+            background: #000;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+            color: #fff;
+            font-family: system-ui, sans-serif;
+        }
+        /* 图片视口容器，负责裁剪 */
+        #viewContainer {
+            width: 95vw;
+            height: 85vh;
+            overflow: hidden;
+            position: relative;
+            cursor: grab;
+        }
+        #viewContainer:active {
+            cursor: grabbing;
+        }
+        #pic {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform-origin: center center;
+            max-width: unset;
+            max-height: unset;
+        }
+        .loading-tip {
+            font-size: 22px;
+            margin-bottom: 20px;
+            display: none;
+        }
+        .tip {
+            position: fixed;
+            bottom: 80px;
+            font-size: 16px;
+            opacity: 0.7;
+        }
+        /* 缩放控制按钮 */
+        .control-bar {
+            position: fixed;
+            bottom: 20px;
+            display: flex;
+            gap:12px;
+        }
+        .control-bar button {
+            padding:8px 16px;
+            font-size:16px;
+            background:#222;
+            color:#fff;
+            border:1px solid #555;
+            border-radius:6px;
+            cursor:pointer;
+        }
+        .control-bar button:hover {
+            background:#444;
+        }
+    </style>
+</head>
+<body>
+    <div class="loading-tip" id="loadingText">图片正在下载中，请稍等</div>
+
+    <!-- 新增视口容器 -->
+    <div id="viewContainer">
+        <img id="pic">
+    </div>
+
+    <div class="tip">my home agent</div>
+    <div class="control-bar">
+        <button id="btnMinus">− 缩小</button>
+        <button id="btnReset">重置视图</button>
+        <button id="btnPlus">+ 放大</button>
+    </div>
+
+    <script src="https://www.gstatic.com/cast/sdk/libs/caf_receiver/v3/cast_receiver_framework.js"></script>
+    <script>
+        const ctx = cast.framework.CastReceiverContext.getInstance();
+        const img = document.getElementById("pic");
+        const viewContainer = document.getElementById("viewContainer");
+        const loadingText = document.getElementById("loadingText");
+        const NAMESPACE = "urn:x-cast:local.image";
+
+        // 缩放平移状态
+        let scale = 1;
+        let offsetX = 0;
+        let offsetY = 0;
+        let isDragging = false;
+        let dragStartX = 0;
+        let dragStartY = 0;
+
+        // 更新图片transform
+        function applyTransform(){
+            img.style.transform = `translate(calc(-50% + ${offsetX}px), calc(-50% + ${offsetY}px)) scale(${scale})`;
+        }
+
+        // 重置视图：新图片进来调用
+        function resetView(){
+            scale = 1;
+            offsetX = 0;
+            offsetY = 0;
+            applyTransform();
+        }
+
+        // 滚轮缩放
+        viewContainer.addEventListener('wheel', (e)=>{
+            e.preventDefault();
+            const delta = e.deltaY < 0 ? 1.12 : 0.88;
+            scale = Math.max(0.1, Math.min(scale * delta, 8));
+            applyTransform();
+        }, {passive:false});
+
+        // 拖拽逻辑
+        viewContainer.addEventListener('mousedown', (e)=>{
+            isDragging = true;
+            dragStartX = e.clientX - offsetX;
+            dragStartY = e.clientY - offsetY;
+        });
+        window.addEventListener('mousemove', (e)=>{
+            if(!isDragging) return;
+            offsetX = e.clientX - dragStartX;
+            offsetY = e.clientY - dragStartY;
+            applyTransform();
+        });
+        window.addEventListener('mouseup', ()=>{
+            isDragging = false;
+        });
+
+        // 按钮控制
+        document.getElementById('btnPlus').onclick = ()=>{
+            scale = Math.min(scale * 1.2,8);
+            applyTransform();
+        };
+        document.getElementById('btnMinus').onclick = ()=>{
+            scale = Math.max(scale * 0.8,0.1);
+            applyTransform();
+        };
+        document.getElementById('btnReset').onclick = resetView;
+
+        // 接收自定义投屏消息
+        ctx.addCustomMessageListener(NAMESPACE, msg => {
+            const imgUrl = msg.data.url;
+            if (!imgUrl) return;
+
+            loadingText.textContent = "图片正在下载中，请稍等";
+            loadingText.style.display = "block";
+            img.src = "";
+
+            img.onload = () => {
+                loadingText.style.display = "none";
+                resetView(); // 新图片加载完重置缩放位置
+            };
+
+            img.onerror = () => {
+                loadingText.textContent = "图片加载失败，请重试";
+            };
+
+            img.src = imgUrl;
+        });
+
+        ctx.start();
+    </script>
+</body>
+</html>
