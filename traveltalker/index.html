@@ -216,6 +216,9 @@
     <label class="field">我的昵称
       <input id="nameInput" type="text" placeholder="例如 A / B" autocomplete="off">
     </label>
+    <label class="field">频道口令
+      <input id="passInput" type="password" placeholder="留空表示服务器未设口令" autocomplete="off" autocapitalize="off" spellcheck="false">
+    </label>
     <p id="secureWarn" class="warn">
       <b>无法调用麦克风：当前不是 HTTPS。</b><br>
       浏览器（尤其 iOS Safari）只在安全上下文下开放麦克风 API，
@@ -248,7 +251,7 @@
   // DOM
   // ---------------------------------------------------------------------
   var $ = function (id) { return document.getElementById(id); };
-  var gate = $('gate'), startBtn = $('startBtn'), roomInput = $('roomInput'), nameInput = $('nameInput');
+  var gate = $('gate'), startBtn = $('startBtn'), roomInput = $('roomInput'), nameInput = $('nameInput'), passInput = $('passInput');
   var pttBtn = $('ptt'), connEl = $('conn'), statusEl = $('statusBadge'), peersEl = $('peers'), resetBtn = $('resetBtn');
   var levelEl = $('level'), logEl = $('log'), volInput = $('vol'), volVal = $('volVal'), toastEl = $('toast'), testBtn = $('testBtn');
 
@@ -261,6 +264,8 @@
     clientId: null,
     channel: 'default',
     name: '',
+    pass: '',
+    noReconnect: false,
     audioCtx: null,
     micStream: null,
     micSource: null,
@@ -426,9 +431,11 @@
     var q = parseQuery(location.search);
     if (q.channel) QS.channel = q.channel;
     if (q.name) QS.name = q.name;
+    if (q.pass) QS.pass = q.pass;
     if (userEdited) return;
     if (QS.channel) { roomInput.value = QS.channel; S.channel = QS.channel; }
     if (QS.name) { nameInput.value = QS.name; S.name = QS.name; }
+    if (QS.pass) passInput.value = QS.pass;
   }
 
   // 返回入口页（断开连接、释放发言权）：用于切换频道 / 昵称
@@ -830,7 +837,7 @@
     return proto + '//' + location.host + '/ws' + endpointQuery();
   }
 
-  // 拉取当前后端地址（隧道地址变化后，多刷新一次即可跟上）
+  // 拉取当前后端地址（隧道地址变化后，刷新一次即可跟上）
   function loadEndpoint() {
     return fetch('endpoint.json?v=' + Date.now(), { cache: 'no-store' })
       .then(function (r) { return r.json(); })
@@ -882,7 +889,7 @@
       DIAG.ws = '已连接';
       renderDiag();
       log('WebSocket 已连接');
-      sendJSON({ type: 'hello', channel: S.channel, name: S.name });
+      sendJSON({ type: 'hello', channel: S.channel, name: S.name, pass: S.pass });
       startHeartbeat();
       updateUI();
     };
@@ -920,6 +927,7 @@
   }
 
   function scheduleReconnect() {
+    if (S.noReconnect) { log('已停止自动重连（口令错误）'); return; }
     if (S.reconnectTimer) return;
     var delay = S.reconnectDelay;
     S.reconnectDelay = Math.min(S.reconnectDelay * 2, 10000);
@@ -932,6 +940,36 @@
       S.reconnectTimer = null;
       connect();
     }, delay);
+  }
+
+  // 口令错误：断开、停止自动重连，并回到入口页让用户改口令
+  function authFailed(message) {
+    S.noReconnect = true;
+    S.running = false;
+    S.connected = false;
+    S.isTalking = false;
+    S.peerSpeaking = false;
+    S.pttHeld = false;
+    stopHeartbeat();
+    if (S.reconnectTimer) { clearTimeout(S.reconnectTimer); S.reconnectTimer = null; }
+    if (S.ws) {
+      var old = S.ws;
+      S.ws = null;
+      try {
+        old.onclose = null;
+        old.onerror = null;
+        old.onmessage = null;
+        old.close();
+      } catch (e) { /* ignore */ }
+    }
+    if (S.txQueue) S.txQueue.length = 0;
+    DIAG.ws = '口令错误，已断开';
+    gate.classList.remove('hidden');
+    updateUI();
+    renderDiag();
+    try { passInput.focus(); } catch (e) { /* ignore */ }
+    toast(message || '口令错误');
+    alert('口令错误，请确认后重试。\n\n（页面地址里带的 ?pass= 会自动填入，也可以手动修改）');
   }
 
   // 强制重连：服务端剔除连接时用的是 terminate（不发 close 帧），
@@ -1026,6 +1064,7 @@
 
       case 'error':
         log('服务端错误：' + (msg.message || msg.code));
+        if (msg.code === 'auth_failed') authFailed(msg.message || '口令错误');
         break;
 
       default:
@@ -1081,6 +1120,8 @@
   function startSession() {
     S.channel = (roomInput.value || '').trim() || QS.channel || 'default';
     S.name = (nameInput.value || '').trim() || QS.name || '';
+    S.pass = (passInput.value || '').trim() || QS.pass || '';
+    S.noReconnect = false;   // 每次重新开始都恢复自动重连
 
     DIAG.mic = '未请求';
     renderDiag();
@@ -1173,6 +1214,7 @@
   })();
   roomInput.addEventListener('input', function () { userEdited = true; });
   nameInput.addEventListener('input', function () { userEdited = true; });
+  passInput.addEventListener('input', function () { userEdited = true; });
 
   bindPTT();
   startBtn.addEventListener('click', startSession);
