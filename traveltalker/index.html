@@ -413,6 +413,7 @@
       '输入框: channel=' + (roomInput.value || '-') + ' name=' + (nameInput.value || '-') + '\n' +
       '实际使用: channel=' + (S.channel || '-') + ' name=' + (S.name || '-') + ' 抖动缓冲=' + JITTER_FRAMES + '帧\n' +
       '后端地址: ' + (DIAG.endpoint || S.endpointWss || '（同源，未取到 endpoint.json）') + '\n' +
+      '口令: ' + (S.pass ? '已填（' + S.pass.length + ' 位）' : '未填 ← 服务器若设了口令会连不上') + '\n' +
       'AudioContext: ' + (S.audioCtx ? (S.audioCtx.state + ' @ ' + S.audioCtx.sampleRate + 'Hz') : '未创建') + '\n' +
       '收到音频帧: ' + DIAG.rx + (DIAG.playErr ? '（播放异常 ' + DIAG.playErr + ' 次）' : '') + '\n' +
       '音频会话解锁: ' + (DIAG.audioSess || '未尝试') + '\n' +
