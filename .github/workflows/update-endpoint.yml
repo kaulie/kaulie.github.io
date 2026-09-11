@@ -1,0 +1,58 @@
+name: update-traveltalker-endpoint
+
+# 作用：定时从云服务器拉取"当前隧道地址"，写进 traveltalker/endpoint.json。
+# 这样 GitHub Pages 上的页面地址（二维码）永远不变，后端换地址也能自动跟上。
+#
+# 为什么用 IP 直连：云厂商对未备案域名做 SNI 拦截，但裸 IP 不带 SNI，不会被拦。
+# 之所以不直接由页面去取：页面在 https 下，用 IP 访问会因证书不匹配被浏览器拒绝；
+# 而 Actions 里可以用 -k 跳过校验，再由 GitHub Pages（带 CORS）转发给页面。
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-traveltalker-endpoint
+  cancel-in-progress: true
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 拉取当前后端地址
+        run: |
+          set -u
+          curl -sk --max-time 25 'https://115.190.153.53:8443/current-tunnel.json' -o /tmp/cur.json || true
+          echo '--- 服务器返回 ---'
+          cat /tmp/cur.json 2>/dev/null || echo '(空)'
+          echo
+
+      - name: 更新 endpoint.json
+        run: |
+          set -u
+          WSS=$(jq -r '.wss // empty' /tmp/cur.json 2>/dev/null || true)
+          if [ -z "$WSS" ]; then echo '未取到有效地址，跳过'; exit 0; fi
+          OLD=$(jq -r '.wss // empty' traveltalker/endpoint.json 2>/dev/null || true)
+          if [ "$WSS" = "$OLD" ]; then echo "地址未变化（$WSS）"; exit 0; fi
+          URL=$(jq -r '.url // empty' /tmp/cur.json 2>/dev/null || true)
+          jq -n --arg wss "$WSS" --arg url "$URL" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            '{ wss: $wss, url: $url, ts: $ts }' > traveltalker/endpoint.json
+          echo "已更新 -> $WSS"
+
+      - name: 提交变更
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add traveltalker/endpoint.json
+          if git diff --cached --quiet; then
+            echo '没有变化，不提交'
+          else
+            git commit -m 'chore(traveltalker): 更新后端地址'
+            git push
+          fi

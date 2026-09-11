@@ -1,0 +1,1233 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="TravelTalker">
+<meta name="theme-color" content="#0b1220">
+<title>TravelTalker 双人对讲机</title>
+<style>
+  :root {
+    --bg: #0b1220;
+    --panel: #141d31;
+    --panel-2: #1d2942;
+    --text: #e8eefc;
+    --muted: #8fa3c8;
+    --green: #2ecc71;
+    --red: #ff4d5e;
+    --amber: #ffb020;
+    --blue: #3aa0ff;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", "PingFang SC", "Microsoft YaHei", sans-serif;
+    overscroll-behavior: none;
+  }
+  body { user-select: none; -webkit-user-select: none; }
+  #app {
+    display: flex; flex-direction: column; height: 100%;
+    padding: env(safe-area-inset-top) 16px env(safe-area-inset-bottom);
+  }
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 4px 6px;
+  }
+  .brand { font-size: 18px; font-weight: 700; letter-spacing: .5px; }
+  .brand small { display:block; font-size: 11px; font-weight: 400; color: var(--muted); letter-spacing: 0; }
+  .conn {
+    font-size: 12px; padding: 5px 10px; border-radius: 999px;
+    background: #24314d; color: var(--muted); white-space: nowrap;
+  }
+  .conn.on  { background: rgba(46,204,113,.16); color: var(--green); }
+  .conn.wait{ background: rgba(255,176,32,.16); color: var(--amber); }
+  .conn.off { background: rgba(255,77,94,.16);  color: var(--red); }
+  .hdr-right { display: flex; align-items: center; }
+  .hdr-right .conn { margin-left: 8px; }
+  .hdr-btn {
+    display: none; font-size: 12px; padding: 5px 12px; border-radius: 999px;
+    background: #24314d; color: var(--text); border: 1px solid #2b3b5e;
+  }
+  .hdr-btn.show { display: inline-block; }
+  .hdr-btn:active { opacity: .8; }
+
+  main { flex: 1; display: flex; flex-direction: column; align-items: center; padding-top: 6px; }
+  /* iOS 12 Safari 不支持 flex gap，统一用 margin 兜底 */
+  main > * { margin-bottom: 14px; }
+
+  .status {
+    font-size: 15px; font-weight: 600; padding: 8px 18px; border-radius: 999px;
+    background: var(--panel); color: var(--muted); transition: all .15s ease;
+    border: 1px solid #223052; min-width: 160px; text-align: center;
+  }
+  .status.idle      { color: var(--muted); }
+  .status.talking   { color: #fff; background: rgba(255,77,94,.22); border-color: var(--red); }
+  .status.listening { color: var(--amber); background: rgba(255,176,32,.14); border-color: rgba(255,176,32,.5); }
+  .status.blocked   { color: var(--red); background: rgba(255,77,94,.12); border-color: rgba(255,77,94,.5); }
+
+  .peers { display:flex; flex-wrap: wrap; justify-content:center; font-size: 12px; color: var(--muted); }
+  .peers .chip { background: var(--panel); border:1px solid #223052; border-radius: 999px; padding: 4px 10px; margin: 3px; }
+  .peers .chip.talking { color: #fff; background: rgba(255,77,94,.22); border-color: var(--red); }
+
+  .level-wrap { width: 70%; max-width: 320px; height: 8px; background: var(--panel); border-radius: 999px; overflow: hidden; }
+  .level { height: 100%; width: 0%; background: linear-gradient(90deg, var(--green), var(--amber)); transition: width .06s linear; }
+
+  .ptt {
+    --size: min(68vw, 300px);
+    width: var(--size); height: var(--size); border-radius: 50%;
+    border: none; touch-action: none; user-select: none; -webkit-user-select: none;
+    background: radial-gradient(circle at 50% 35%, #2a3a5e, #16203a 70%);
+    color: #fff; box-shadow: 0 12px 30px rgba(0,0,0,.45), inset 0 2px 4px rgba(255,255,255,.08);
+    display: flex; align-items: center; justify-content: center; flex-direction: column;
+    transition: transform .08s ease, box-shadow .12s ease, background .12s ease;
+    margin-top: 6px;
+  }
+  .ptt:disabled, .ptt.notready { opacity: .45; }
+  .ptt.talking {
+    background: radial-gradient(circle at 50% 35%, #ff6b78, #c31d2c 70%);
+    box-shadow: 0 0 0 10px rgba(255,77,94,.14), 0 14px 34px rgba(195,29,44,.5);
+    transform: scale(.965);
+  }
+  .ptt.listening {
+    background: radial-gradient(circle at 50% 35%, #ffca63, #b97a00 70%);
+    box-shadow: 0 0 0 10px rgba(255,176,32,.14), 0 14px 34px rgba(185,122,0,.45);
+  }
+  .ptt-label { font-size: 24px; font-weight: 700; letter-spacing: 2px; }
+  .ptt-hint { font-size: 12px; color: rgba(255,255,255,.75); margin-top: 6px; }
+  .ptt:active { transform: scale(.95); }
+
+  .volume { width: 78%; max-width: 360px; display: flex; align-items: center; color: var(--muted); font-size: 13px; }
+  .volume > * + * { margin-left: 12px; }
+  .mini-btn {
+    font-size: 12px; padding: 6px 12px; border-radius: 999px; border: 1px solid #2b3b5e;
+    background: #24314d; color: var(--text); white-space: nowrap;
+  }
+  .mini-btn:active { opacity: .8; }
+  .live {
+    font-family: ui-monospace, Menlo, monospace; font-size: 10px; color: var(--muted);
+    text-align: center; min-height: 14px;
+  }
+  .volume input[type=range] { flex: 1; accent-color: var(--blue); height: 28px; }
+  .volume #volVal { width: 44px; text-align: right; }
+
+  .log {
+    width: 100%; max-width: 420px; height: 70px; overflow-y: auto;
+    font-size: 11px; color: var(--muted); background: rgba(255,255,255,.03);
+    border-radius: 10px; padding: 8px 10px; font-family: ui-monospace, Menlo, monospace;
+    -webkit-overflow-scrolling: touch;
+  }
+  .log div { padding: 1px 0; }
+
+  .gate {
+    position: fixed;
+    top: 0; right: 0; bottom: 0; left: 0;
+    width: 100%; height: 100%;
+    background: rgba(6,10,20,.94);
+    display: flex; align-items: center; justify-content: center; padding: 20px; z-index: 20;
+    -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
+  }
+  .gate.hidden { display: none; }
+  .gate-card {
+    width: 100%; max-width: 360px; background: var(--panel); border: 1px solid #24314d;
+    border-radius: 18px; padding: 22px 20px; text-align: center;
+  }
+  .gate-card h1 { margin: 0 0 4px; font-size: 22px; }
+  .gate-card p { margin: 0 0 16px; color: var(--muted); font-size: 13px; }
+  .field { display: block; text-align: left; font-size: 12px; color: var(--muted); margin-bottom: 12px; }
+  .field input {
+    width: 100%; margin-top: 6px; padding: 12px; border-radius: 10px;
+    border: 1px solid #2b3b5e; background: #0f1729; color: var(--text); font-size: 16px;
+  }
+  .gate-card button {
+    width: 100%; padding: 14px; border: none; border-radius: 12px; margin-top: 4px;
+    background: var(--blue); color: #fff; font-size: 16px; font-weight: 700;
+  }
+  .gate-card button:active { opacity: .85; }
+  .tiny { margin: 14px 0 0 !important; font-size: 11px; color: var(--muted); line-height: 1.5; }
+  .warn {
+    display: none; margin: 0 0 12px; padding: 10px 12px; border-radius: 10px; text-align: left;
+    font-size: 12px; line-height: 1.55; color: #ffd7db;
+    background: rgba(255,77,94,.14); border: 1px solid rgba(255,77,94,.55);
+  }
+  .warn.show { display: block; }
+  .warn code { font-size: 11px; color: #fff; word-break: break-all; }
+  .diag {
+    margin: 12px 0 0; padding: 8px 10px; border-radius: 8px; text-align: left;
+    font-family: ui-monospace, Menlo, monospace; font-size: 10px; line-height: 1.65;
+    color: var(--muted); background: rgba(255,255,255,.04);
+    white-space: pre-wrap; word-break: break-all;
+  }
+  .toast {
+    position: fixed; left: 50%; bottom: calc(24px + env(safe-area-inset-bottom));
+    transform: translateX(-50%); background: rgba(255,77,94,.95); color: #fff;
+    padding: 10px 18px; border-radius: 999px; font-size: 13px; font-weight: 600;
+    opacity: 0; transition: opacity .2s ease; pointer-events: none; z-index: 30; white-space: nowrap;
+  }
+  .toast.show { opacity: 1; }
+
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <div class="brand">TravelTalker<small>双人户外 PTT 对讲机</small></div>
+    <div class="hdr-right">
+      <button id="resetBtn" class="hdr-btn">设置</button>
+      <div id="conn" class="conn off">未连接</div>
+    </div>
+  </header>
+
+  <main>
+    <div id="statusBadge" class="status idle">空闲</div>
+
+    <div id="peers" class="peers"><span class="chip">等待加入…</span></div>
+
+    <div class="level-wrap"><div id="level" class="level"></div></div>
+
+    <button id="ptt" class="ptt" disabled>
+      <span class="ptt-label">按住说话</span>
+      <span class="ptt-hint">松手结束</span>
+    </button>
+
+    <div class="volume">
+      <label for="vol">音量</label>
+      <input id="vol" type="range" min="0" max="150" value="100">
+      <span id="volVal">100%</span>
+      <button id="testBtn" class="mini-btn">测试</button>
+    </div>
+
+    <div id="live" class="live"></div>
+
+    <div id="log" class="log"></div>
+  </main>
+</div>
+
+<div id="gate" class="gate">
+  <div class="gate-card">
+    <h1>TravelTalker</h1>
+    <p>半双工 PTT 对讲 · 云服务器中继</p>
+    <label class="field">频道房间
+      <input id="roomInput" type="text" placeholder="default" autocomplete="off" autocapitalize="off" spellcheck="false">
+    </label>
+    <label class="field">我的昵称
+      <input id="nameInput" type="text" placeholder="例如 A / B" autocomplete="off">
+    </label>
+    <p id="secureWarn" class="warn">
+      <b>无法调用麦克风：当前不是 HTTPS。</b><br>
+      浏览器（尤其 iOS Safari）只在安全上下文下开放麦克风 API，
+      <code id="warnOrigin"></code> 这类 http:// 地址下 <code>navigator.mediaDevices</code> 直接不可用。<br>
+      请改用 <b>https://</b> 地址访问：域名 + 证书，或内网穿透隧道。
+    </p>
+    <button id="startBtn">开始 / 连接</button>
+    <button id="refetchBtn" class="mini-btn" style="width:100%;margin-top:8px;padding:10px">↻ 重新获取后端地址</button>
+    <div id="diag" class="diag">诊断：初始化中…</div>
+    <p class="tiny">需要 HTTPS 页面（Safari 调用麦克风强制 HTTPS）。<br>使用时请保持页面在前台，锁屏或切后台会释放麦克风。</p>
+  </div>
+</div>
+
+<div id="toast" class="toast"></div>
+
+<script>
+(function () {
+  'use strict';
+
+  // ---------------------------------------------------------------------
+  // 常量 / 协议参数（与服务端保持一致）
+  // ---------------------------------------------------------------------
+  var OUT_RATE = 16000;       // 目标采样率
+  var FRAME_SAMPLES = 320;    // 20ms
+  var JITTER_FRAMES = 6;      // 抖动缓冲目标 ~120ms（发送侧已改 20ms 匀速，这里留网络抖动余量）
+  var HEARTBEAT_MS = 2000;    // 心跳间隔
+  var MAX_LEAD_SEC = 0.5;     // 播放缓冲上限，超出则重置（防止延迟累积）
+
+  // ---------------------------------------------------------------------
+  // DOM
+  // ---------------------------------------------------------------------
+  var $ = function (id) { return document.getElementById(id); };
+  var gate = $('gate'), startBtn = $('startBtn'), roomInput = $('roomInput'), nameInput = $('nameInput');
+  var pttBtn = $('ptt'), connEl = $('conn'), statusEl = $('statusBadge'), peersEl = $('peers'), resetBtn = $('resetBtn');
+  var levelEl = $('level'), logEl = $('log'), volInput = $('vol'), volVal = $('volVal'), toastEl = $('toast'), testBtn = $('testBtn');
+
+  // ---------------------------------------------------------------------
+  // 状态
+  // ---------------------------------------------------------------------
+  var S = {
+    ws: null,
+    connected: false,
+    clientId: null,
+    channel: 'default',
+    name: '',
+    audioCtx: null,
+    micStream: null,
+    micSource: null,
+    processor: null,
+    mixer: null,
+    playGain: null,
+    resampler: null,
+    frameBuf: new Float32Array(0),
+    nextPlayTime: 0,
+    running: false,
+    isTalking: false,
+    peerSpeaking: false,
+    pttHeld: false,
+    reconnectDelay: 1000,
+    reconnectTimer: null,
+    heartbeatTimer: null,
+    lastState: null,
+    lastCloseCode: null,
+    lastPongAt: 0,
+    endpointWss: null,
+    pttHeldAt: 0,
+    txQueue: [],
+    txTimer: null,
+    txNextAt: 0
+  };
+
+  var SC = { AudioContext: window.AudioContext || window.webkitAudioContext };
+
+  function log(msg) {
+    var t = new Date();
+    var line = document.createElement('div');
+    var hh = ('0' + t.getHours()).slice(-2) + ':' + ('0' + t.getMinutes()).slice(-2) + ':' + ('0' + t.getSeconds()).slice(-2);
+    line.textContent = hh + '  ' + msg;
+    logEl.appendChild(line);
+    while (logEl.childNodes.length > 60) logEl.removeChild(logEl.firstChild);
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  var toastTimer = null;
+  function toast(msg) {
+    toastEl.textContent = msg;
+    toastEl.classList.add('show');
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { toastEl.classList.remove('show'); }, 1600);
+    if (navigator.vibrate) { try { navigator.vibrate(60); } catch (e) {} }
+  }
+
+  function setConn(text, cls) {
+    connEl.textContent = text;
+    connEl.className = 'conn ' + cls;
+  }
+
+  function setStatus(text, cls) {
+    statusEl.textContent = text;
+    statusEl.className = 'status ' + cls;
+  }
+
+  function updateUI() {
+    // 用 add/remove 而非 toggle(cls, force)，兼容老 Safari
+    if (S.isTalking) pttBtn.classList.add('talking'); else pttBtn.classList.remove('talking');
+    if (!S.isTalking && S.peerSpeaking) pttBtn.classList.add('listening'); else pttBtn.classList.remove('listening');
+    pttBtn.disabled = false; // 不要用 disabled：它会在按住过程中吞掉 touchend，
+                             // 导致 pttHeld 卡死、之后按 PTT 毫无反应。改用样式 + pttDown 里的判断。
+    if (!S.connected || !S.running) pttBtn.classList.add('notready');
+    else pttBtn.classList.remove('notready');
+    if (resetBtn) { if (S.running) resetBtn.classList.add('show'); else resetBtn.classList.remove('show'); }
+
+    if (!S.connected) {
+      setStatus(S.lastCloseCode ? '未连接 · code ' + S.lastCloseCode : '未连接', 'idle');
+      pttBtn.querySelector('.ptt-label').textContent = '未连接';
+    } else if (S.isTalking) {
+      setStatus('正在发言', 'talking');
+      pttBtn.querySelector('.ptt-label').textContent = '正在说话';
+    } else if (S.peerSpeaking) {
+      setStatus('收听中 · 对方讲话中', 'listening');
+      pttBtn.querySelector('.ptt-label').textContent = '收听中';
+    } else {
+      setStatus('空闲', 'idle');
+      pttBtn.querySelector('.ptt-label').textContent = '按住说话';
+    }
+  }
+
+  function renderPeers(clients, you) {
+    peersEl.innerHTML = '';
+    var others = (clients || []).filter(function (c) { return c.id !== you; });
+    var me = (clients || []).filter(function (c) { return c.id === you; })[0];
+    if (me) {
+      var mc = document.createElement('span');
+      mc.className = 'chip' + (me.talking ? ' talking' : '');
+      mc.textContent = '我：' + me.name + (me.talking ? ' 🎙' : '');
+      peersEl.appendChild(mc);
+    }
+    if (others.length === 0) {
+      var wait = document.createElement('span');
+      wait.className = 'chip';
+      wait.textContent = '等待对方加入…';
+      peersEl.appendChild(wait);
+    }
+    others.forEach(function (c) {
+      var el = document.createElement('span');
+      el.className = 'chip' + (c.talking ? ' talking' : '');
+      el.textContent = c.name + (c.talking ? ' 🎙 讲话中' : ' 在线');
+      peersEl.appendChild(el);
+    });
+  }
+
+  // ---------------------------------------------------------------------
+  // 页面内诊断（iPhone 上没有 devtools，失败原因必须直接显示出来）
+  // ---------------------------------------------------------------------
+  // 自己解析查询串，不依赖 URLSearchParams（老 Safari 上曾出现取不到值）
+  function parseQuery(search) {
+    var out = {};
+    var q = String(search || '');
+    if (q.charAt(0) === '?') q = q.slice(1);
+    if (!q) return out;
+    var parts = q.split('&');
+    for (var i = 0; i < parts.length; i++) {
+      if (!parts[i]) continue;
+      var kv = parts[i].split('=');
+      var k = decodeURIComponent(kv[0] || '');
+      var v = kv.length > 1 ? decodeURIComponent(kv.slice(1).join('=')) : '';
+      if (k) out[k] = v;
+    }
+    return out;
+  }
+  var QS = parseQuery(location.search);
+
+  // 抖动缓冲帧数可用 ?jb=N 覆盖：局域网均匀到货 6 帧(120ms) 够用；
+  // 公网隧道会成批到货（实测批间隔 p90 约 280ms），建议 15 帧(300ms) 左右。
+  (function () {
+    var jb = parseInt(QS.jb, 10);
+    if (jb >= 3 && jb <= 40) JITTER_FRAMES = jb;
+  })();
+
+  var DIAG = { mic: '未请求', ws: '未开始', tries: 0, rx: 0, playErr: 0, audioSess: '', outLevel: '0.00', endpoint: '' };
+
+  function renderDiag() {
+    var el = document.getElementById('diag');
+    if (!el) return;
+    el.textContent =
+      '地址: ' + location.origin + '\n' +
+      '安全上下文: ' + (window.isSecureContext ? '是' : '否（麦克风会被禁用）') + '\n' +
+      'mediaDevices: ' + (navigator.mediaDevices && navigator.mediaDevices.getUserMedia ? '可用' : '不可用') + '\n' +
+      'URL 参数: channel=' + (QS.channel || '-') + ' name=' + (QS.name || '-') + '\n' +
+      '输入框: channel=' + (roomInput.value || '-') + ' name=' + (nameInput.value || '-') + '\n' +
+      '实际使用: channel=' + (S.channel || '-') + ' name=' + (S.name || '-') + ' 抖动缓冲=' + JITTER_FRAMES + '帧\n' +
+      '后端地址: ' + (DIAG.endpoint || S.endpointWss || '（同源，未取到 endpoint.json）') + '\n' +
+      'AudioContext: ' + (S.audioCtx ? (S.audioCtx.state + ' @ ' + S.audioCtx.sampleRate + 'Hz') : '未创建') + '\n' +
+      '收到音频帧: ' + DIAG.rx + (DIAG.playErr ? '（播放异常 ' + DIAG.playErr + ' 次）' : '') + '\n' +
+      '音频会话解锁: ' + (DIAG.audioSess || '未尝试') + '\n' +
+      '输出电平: ' + DIAG.outLevel + '  ← 按「测试」时应明显跳动\n' +
+      '麦克风: ' + DIAG.mic + '\n' +
+      'WebSocket: ' + DIAG.ws + '\n' +
+      '重连次数: ' + DIAG.tries;
+  }
+
+  // ---------------------------------------------------------------------
+  // 以 URL 参数为准（除非用户手动改过输入框）—— 应对 bfcache 还原出的陈旧状态
+  // ---------------------------------------------------------------------
+  var userEdited = false;
+
+  function applyURLParams() {
+    var q = parseQuery(location.search);
+    if (q.channel) QS.channel = q.channel;
+    if (q.name) QS.name = q.name;
+    if (userEdited) return;
+    if (QS.channel) { roomInput.value = QS.channel; S.channel = QS.channel; }
+    if (QS.name) { nameInput.value = QS.name; S.name = QS.name; }
+  }
+
+  // 返回入口页（断开连接、释放发言权）：用于切换频道 / 昵称
+  function backToGate() {
+    if (S.pttHeld) { S.pttHeld = false; sendJSON({ type: 'ptt_stop' }); }
+    S.isTalking = false;
+    S.peerSpeaking = false;
+    S.connected = false;
+    S.lastCloseCode = null;
+    S.running = false;
+    if (S.reconnectTimer) { clearTimeout(S.reconnectTimer); S.reconnectTimer = null; }
+    if (S.ws) {
+      var old = S.ws;
+      S.ws = null;
+      try { old.onclose = null; old.close(); } catch (e) { /* ignore */ }
+    }
+    S.txQueue.length = 0;
+    stopHeartbeat();
+    gate.classList.remove('hidden');
+    DIAG.ws = '已手动断开';
+    DIAG.tries = 0;
+    updateUI();
+    renderDiag();
+    log('已断开并返回设置页');
+  }
+
+  // ---------------------------------------------------------------------
+  // 线性重采样：把 AudioContext 实际采样率转成 16kHz
+  // ---------------------------------------------------------------------
+  function Resampler(inRate, outRate) {
+    this.inRate = inRate;
+    this.outRate = outRate;
+    this.ratio = inRate / outRate;
+    this.buf = new Float32Array(0);
+    this.pos = 0;
+  }
+  Resampler.prototype.push = function (input) {
+    if (this.inRate === this.outRate) return input;
+    var merged = new Float32Array(this.buf.length + input.length);
+    merged.set(this.buf, 0);
+    merged.set(input, this.buf.length);
+
+    var out = [];
+    var pos = this.pos;
+    while (pos + 1 < merged.length) {
+      var i = Math.floor(pos);
+      var frac = pos - i;
+      out.push(merged[i] * (1 - frac) + merged[i + 1] * frac);
+      pos += this.ratio;
+    }
+    var consumed = Math.floor(pos);
+    this.pos = pos - consumed;
+    this.buf = merged.slice(consumed);
+    return Float32Array.from(out);
+  };
+
+  // ---------------------------------------------------------------------
+  // 音频初始化 / 麦克风采集
+  // ---------------------------------------------------------------------
+  function initAudio() {
+    if (S.audioCtx) return Promise.resolve();
+    var ctx;
+    try {
+      ctx = new SC.AudioContext({ sampleRate: OUT_RATE, latencyHint: 'interactive' });
+    } catch (e) {
+      ctx = new SC.AudioContext();
+    }
+    S.audioCtx = ctx;
+
+    S.mixer = ctx.createGain();
+    S.mixer.gain.value = 0; // 不监听自己的麦克风，避免啸叫
+    S.mixer.connect(ctx.destination);
+
+    S.playGain = ctx.createGain();
+    S.playGain.gain.value = parseInt(volInput.value, 10) / 100;
+    S.playGain.connect(ctx.destination);
+
+    // 输出探针：读取真正送往扬声器的信号强度（用于区分"没出声"和"被手机静音"）
+    try {
+      S.analyser = ctx.createAnalyser();
+      S.analyser.fftSize = 256;
+      S.playGain.connect(S.analyser);
+    } catch (e) { S.analyser = null; }
+
+    // 保活：iOS 会在空闲时挂起 AudioContext，挂起后"收听"会完全没声音。
+    // 持续运行一路静音源，让上下文保持活跃。
+    try {
+      var kaBuf = ctx.createBuffer(1, Math.max(1, Math.floor(ctx.sampleRate * 0.5)), ctx.sampleRate);
+      var kaSrc = ctx.createBufferSource();
+      kaSrc.buffer = kaBuf; // 内容全 0 = 静音
+      kaSrc.loop = true;
+      var kaGain = ctx.createGain();
+      kaGain.gain.value = 0.0001;
+      kaSrc.connect(kaGain);
+      kaGain.connect(ctx.destination);
+      kaSrc.start(0);
+      S.keepAlive = kaSrc;
+    } catch (e) { S.keepAlive = null; }
+
+    S.resampler = new Resampler(ctx.sampleRate, OUT_RATE);
+    // 播放端重采样：iOS 的 createBuffer 不接受与上下文不同的采样率（会抛 NotSupportedError）
+    S.playResampler = new Resampler(OUT_RATE, ctx.sampleRate);
+    log('音频上下文 ' + ctx.sampleRate + 'Hz → 重采样到 ' + OUT_RATE + 'Hz');
+    return ctx.state === 'suspended' ? ctx.resume() : Promise.resolve();
+  }
+
+  function startMic() {
+    if (S.micStream) {
+      DIAG.mic = '已获取（复用已有麦克风流）';
+      renderDiag();
+      return Promise.resolve();
+    }
+    var constraints = {
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+        channelCount: 1
+      },
+      video: false
+    };
+    return navigator.mediaDevices.getUserMedia(constraints).then(function (stream) {
+      S.micStream = stream;
+      S.micSource = S.audioCtx.createMediaStreamSource(stream);
+      // ScriptProcessorNode 兼容性最好（含 iOS Safari）；如后续要升级可换 AudioWorklet。
+      S.processor = S.audioCtx.createScriptProcessor(4096, 1, 1);
+      S.processor.onaudioprocess = onAudioProcess;
+      S.micSource.connect(S.processor);
+      S.processor.connect(S.mixer);
+      DIAG.mic = '已获取（AudioContext ' + S.audioCtx.sampleRate + 'Hz）';
+      renderDiag();
+      log('麦克风已就绪（AEC/降噪/AGC 已开启）');
+    });
+  }
+
+  function onAudioProcess(e) {
+    var input = e.inputBuffer.getChannelData(0);
+
+    // 采集电平指示
+    var peak = 0;
+    for (var i = 0; i < input.length; i += 8) {
+      var v = Math.abs(input[i]);
+      if (v > peak) peak = v;
+    }
+    levelEl.style.width = Math.min(100, Math.round(peak * 140)) + '%';
+
+    if (!S.running) return;
+
+    var out = S.resampler.push(input);
+    if (!out.length) return;
+
+    // 累积到 320 采样（20ms）一帧
+    var merged = new Float32Array(S.frameBuf.length + out.length);
+    merged.set(S.frameBuf, 0);
+    merged.set(out, S.frameBuf.length);
+    S.frameBuf = merged;
+
+    while (S.frameBuf.length >= FRAME_SAMPLES) {
+      var frame = S.frameBuf.subarray(0, FRAME_SAMPLES);
+      S.frameBuf = S.frameBuf.slice(FRAME_SAMPLES);
+      if (S.isTalking) enqueueTxFrame(floatFrameToPcm(frame));
+    }
+  }
+
+  function floatFrameToPcm(f32) {
+    var pcm = new Int16Array(FRAME_SAMPLES);
+    for (var i = 0; i < FRAME_SAMPLES; i++) {
+      var s = Math.max(-1, Math.min(1, f32[i]));
+      pcm[i] = s < 0 ? Math.round(s * 0x8000) : Math.round(s * 0x7fff);
+    }
+    return pcm;
+  }
+
+  function sendPcm(pcm) {
+    if (!S.connected || !S.ws || S.ws.readyState !== 1) return;
+    try {
+      S.ws.send(pcm.buffer);
+    } catch (err) {
+      log('发送音频失败: ' + err.message);
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // 发送侧匀速节流
+  //
+  // ScriptProcessor 每 ~93ms 才回调一次（4096 @44.1kHz），一次吐出 4~5 帧。
+  // 若直接发出去，接收端就变成"每 93ms 收到一批（80ms 音频）"，
+  // 而抖动缓冲只有 80ms → 每个周期必然欠载 ~13ms，
+  // 听感就是"声音忽高忽低 / 发抖"（约 10.7Hz）。
+  //
+  // 这里把突发帧排进队列，按 20ms 一帧匀速发出，让接收端拿到平滑的流。
+  // ---------------------------------------------------------------------
+  function enqueueTxFrame(pcm) {
+    S.txQueue.push(pcm);
+    // 积压说明节流落后于采集，丢最旧的帧，避免延迟持续累积
+    while (S.txQueue.length > 12) S.txQueue.shift();
+  }
+
+  function startTxPacer() {
+    if (S.txTimer) return;
+    S.txNextAt = Date.now();
+    S.txTimer = setInterval(function () {
+      if (!S.isTalking) {
+        if (S.txQueue.length) S.txQueue.length = 0;
+        S.txNextAt = Date.now();
+        return;
+      }
+      var now = Date.now();
+      if (S.txNextAt < now - 200) S.txNextAt = now; // 落后过多则重置，避免一次性补发
+      var guard = 0;
+      while (S.txQueue.length > 0 && now >= S.txNextAt && guard < 8) {
+        sendPcm(S.txQueue.shift());
+        S.txNextAt += 20;
+        guard += 1;
+      }
+    }, 10);
+  }
+
+  // iOS 的 Web Audio 默认走 ambient 音频会话，会被侧边静音开关掐掉（<audio> 不受影响）。
+  // 播放一段静音 <audio> 可把会话切到 playback，从而解除静音。必须在用户手势里调用。
+  var SILENT_WAV = (function () {
+    try {
+      var n = 800; // 0.1s @ 8000Hz 静音
+      var buf = new ArrayBuffer(44 + n);
+      var v = new DataView(buf);
+      var w = function (off, str) { for (var i = 0; i < str.length; i++) v.setUint8(off + i, str.charCodeAt(i)); };
+      w(0, 'RIFF'); v.setUint32(4, 36 + n, true); w(8, 'WAVE');
+      w(12, 'fmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+      v.setUint32(24, 8000, true); v.setUint32(28, 8000, true); v.setUint16(32, 1, true); v.setUint16(34, 8, true);
+      w(36, 'data'); v.setUint32(40, n, true);
+      var bytes = new Uint8Array(buf);
+      for (var i = 0; i < n; i++) bytes[44 + i] = 128; // 8bit 的静音电平
+      var s = '';
+      for (var j = 0; j < bytes.length; j++) s += String.fromCharCode(bytes[j]);
+      return 'data:audio/wav;base64,' + btoa(s);
+    } catch (e) { return ''; }
+  })();
+
+  function unlockAudioSession() {
+    if (!SILENT_WAV) return;
+    try {
+      if (!S.unlockEl) {
+        var a = document.createElement('audio');
+        a.setAttribute('playsinline', '');
+        a.setAttribute('webkit-playsinline', '');
+        a.loop = true;
+        a.src = SILENT_WAV;
+        S.unlockEl = a;
+      }
+      var p = S.unlockEl.play();
+      if (p && p.catch) p.catch(function () {});
+      DIAG.audioSess = '已尝试解锁';
+    } catch (e) {
+      DIAG.audioSess = '解锁失败: ' + e.message;
+    }
+  }
+
+  var _outBuf = null;
+  var _uptime = 0;
+
+  // 1 秒一次：更新「运行 Ns」（页面是否还活着，一眼可辨）、输出电平、
+  // 以及 PTT 卡死看门狗。（原来 200ms 一次对老设备太频繁）
+  setInterval(function () {
+    _uptime += 1;
+    DIAG.uptime = _uptime;
+
+    // 输出电平
+    if (S.analyser) {
+      if (!_outBuf) _outBuf = new Uint8Array(S.analyser.fftSize);
+      try {
+        S.analyser.getByteTimeDomainData(_outBuf);
+        var peak = 0;
+        for (var i = 0; i < _outBuf.length; i++) {
+          var v = Math.abs(_outBuf[i] - 128);
+          if (v > peak) peak = v;
+        }
+        DIAG.outLevel = (peak / 128).toFixed(2);
+      } catch (e) { /* ignore */ }
+    }
+
+    // 被系统挂起/打断的上下文，周期性尝试恢复
+    if (S.running && S.audioCtx && S.audioCtx.state !== 'running') {
+      try { S.audioCtx.resume(); } catch (e) { /* ignore */ }
+    }
+
+    // 看门狗：万一 touchend/touchcancel 没送达（例如按住过程中按钮被置灰），
+    // pttHeld 会永远卡在 true，导致之后按 PTT 毫无反应
+    if (S.pttHeld && S.pttHeldAt && Date.now() - S.pttHeldAt > 60000) {
+      log('看门狗：PTT 按下状态超过 60s，自动复位');
+      S.pttHeld = false;
+      S.isTalking = false;
+      sendJSON({ type: 'ptt_stop' });
+      updateUI();
+    }
+
+    if (!gate.classList.contains('hidden')) renderDiag();
+
+    var liveEl = document.getElementById('live');
+    if (liveEl && S.running) {
+      liveEl.textContent = '运行 ' + _uptime + 's · 收帧 ' + DIAG.rx + ' · 电平 ' + DIAG.outLevel +
+        ' · 音频 ' + (S.audioCtx ? S.audioCtx.state : '未初始化');
+    }
+  }, 1000);
+
+  // 本机测试音：走与「接收到的音频」完全相同的播放链路（playGain → destination），
+  // 用来区分到底是"没收到"还是"收到了放不出来"。
+  function playTestTone() {
+    var ctx = S.audioCtx;
+    if (!ctx) { toast('音频尚未初始化'); return; }
+    if (ctx.state === 'suspended') { ctx.resume().catch(function () {}); }
+    unlockAudioSession();
+    try {
+      var rate = ctx.sampleRate;
+      var frames = Math.floor(rate * 0.6);
+      var buffer = ctx.createBuffer(1, frames, rate);
+      var d = buffer.getChannelData(0);
+      for (var i = 0; i < frames; i++) {
+        var t = i / rate;
+        var env = Math.min(1, i / (rate * 0.02)) * Math.min(1, (frames - i) / (rate * 0.08));
+        d[i] = Math.sin(2 * Math.PI * 1000 * t) * 0.25 * env;
+      }
+      var src = ctx.createBufferSource();
+      src.buffer = buffer;
+      src.connect(S.playGain);
+      src.start();
+      log('播放本机测试音（1kHz / 0.6s）—— 听不到说明是手机音频输出/静音开关问题');
+    } catch (err) {
+      log('测试音失败: ' + err.message);
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // 播放（带抖动缓冲）
+  // ---------------------------------------------------------------------
+  function playAudio(int16) {
+    var ctx = S.audioCtx;
+    if (!ctx) return;
+    // iOS 会挂起空闲的 AudioContext —— 必须像测试音那样先恢复，否则收到音频也是哑的
+    if (ctx.state !== 'running') {
+      try { ctx.resume(); } catch (e) { /* ignore */ }
+    }
+    try {
+      var f32 = new Float32Array(int16.length);
+      for (var i = 0; i < int16.length; i++) {
+        f32[i] = int16[i] < 0 ? int16[i] / 0x8000 : int16[i] / 0x7fff;
+      }
+      // 关键：AudioBuffer 必须用 ctx.sampleRate 创建。
+      // iOS 上 createBuffer() 传入与上下文不同的采样率会抛
+      // NotSupportedError（"The operation is not supported"），
+      // 导致每一帧都播放失败、完全没声音。所以先把自己 16kHz 的 PCM
+      // 重采样到设备实际采样率（iOS 常见 44100/48000）。
+      var samples = S.playResampler ? S.playResampler.push(f32) : f32;
+      if (!samples.length) return;
+      var buffer = ctx.createBuffer(1, samples.length, ctx.sampleRate);
+      // 另：AudioBuffer.copyToChannel 是 Safari 14.1+ 才有的 API，iOS 12 上不存在，
+      // 统一用 getChannelData().set()。
+      buffer.getChannelData(0).set(samples);
+
+      var src = ctx.createBufferSource();
+      src.buffer = buffer;
+      src.connect(S.playGain);
+
+      var now = ctx.currentTime;
+      var minLead = JITTER_FRAMES * 0.02;
+      // 首次播放 / 落后 / 延迟过大时，重置调度指针，防止延迟累积。
+      if (S.nextPlayTime < now + 0.005 || S.nextPlayTime > now + MAX_LEAD_SEC) {
+        S.nextPlayTime = now + minLead;
+      }
+      src.start(S.nextPlayTime);
+      S.nextPlayTime += buffer.duration;
+
+      DIAG.rx += 1;
+      if (DIAG.rx === 1) { log('收到第一帧音频，开始播放'); renderDiag(); }
+    } catch (err) {
+      DIAG.playErr += 1;
+      if (DIAG.playErr <= 3) { log('播放异常: ' + err.message); renderDiag(); }
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // WebSocket 连接 / 心跳 / 重连
+  // ---------------------------------------------------------------------
+  function sendJSON(obj) {
+    if (S.ws && S.ws.readyState === 1) {
+      try { S.ws.send(JSON.stringify(obj)); } catch (e) { log('发送失败: ' + e.message); }
+    }
+  }
+
+  // 后端地址来源：
+  //  1) endpoint.json —— 本页托管在 GitHub Pages，由 Actions 定时从服务器拉取当前隧道地址并更新
+  //  2) 回退到同源 —— 如果本页是直接由中继服务提供的
+  function endpointQuery() {
+    return '?channel=' + encodeURIComponent(S.channel) + '&name=' + encodeURIComponent(S.name);
+  }
+
+  function wsURL() {
+    if (S.endpointWss) return S.endpointWss + endpointQuery();
+    var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return proto + '//' + location.host + '/ws' + endpointQuery();
+  }
+
+  // 拉取当前后端地址（隧道地址变化后，多刷新一次即可跟上）
+  function loadEndpoint() {
+    return fetch('endpoint.json?v=' + Date.now(), { cache: 'no-store' })
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        if (j && j.wss) {
+          var changed = S.endpointWss !== j.wss;
+          S.endpointWss = j.wss;
+          DIAG.endpoint = j.wss + (j.ts ? '（更新于 ' + j.ts + '）' : '');
+          if (changed) log('后端地址: ' + j.wss);
+          renderDiag();
+          return true;
+        }
+        DIAG.endpoint = 'endpoint.json 缺少 wss 字段';
+        renderDiag();
+        return false;
+      })
+      .catch(function (e) {
+        DIAG.endpoint = '读取失败: ' + (e && e.message ? e.message : e);
+        renderDiag();
+        return false;
+      });
+  }
+
+  function connect() {
+    if (S.reconnectTimer) { clearTimeout(S.reconnectTimer); S.reconnectTimer = null; }
+    if (S.ws && (S.ws.readyState === 0 || S.ws.readyState === 1)) return;
+
+    setConn('连接中…', 'wait');
+    applyURLParams(); // 连接前再用 URL 参数兜底一次（应对陈旧页面状态）
+    DIAG.ws = '连接中 ' + wsURL();
+    renderDiag();
+    var ws;
+    try {
+      ws = new WebSocket(wsURL());
+    } catch (e) {
+      log('无法创建 WebSocket: ' + e.message);
+      scheduleReconnect();
+      return;
+    }
+    ws.binaryType = 'arraybuffer';
+    S.ws = ws;
+
+    ws.onopen = function () {
+      S.connected = true;
+      S.reconnectDelay = 1000;
+      S.lastCloseCode = null;
+      S.lastPongAt = Date.now();
+      setConn('已连接', 'on');
+      DIAG.ws = '已连接';
+      renderDiag();
+      log('WebSocket 已连接');
+      sendJSON({ type: 'hello', channel: S.channel, name: S.name });
+      startHeartbeat();
+      updateUI();
+    };
+
+    ws.onmessage = function (ev) {
+      if (typeof ev.data === 'string') {
+        var msg;
+        try { msg = JSON.parse(ev.data); } catch (e) { return; }
+        handleControl(msg);
+      } else {
+        playAudio(new Int16Array(ev.data));
+      }
+    };
+
+    ws.onclose = function (ev) {
+      S.connected = false;
+      S.lastCloseCode = ev && ev.code;
+      S.isTalking = false;
+      S.peerSpeaking = false;
+      S.pttHeld = false;
+      setConn('已断开', 'off');
+      stopHeartbeat();
+      updateUI();
+      DIAG.ws = '已断开 code=' + (ev && ev.code) + (ev && ev.reason ? ' ' + ev.reason : '');
+      renderDiag();
+      log('WebSocket 断开 (code=' + (ev && ev.code) + ')，准备重连…');
+      scheduleReconnect();
+    };
+
+    ws.onerror = function () {
+      DIAG.ws = '连接错误（浏览器不提供详情）';
+      renderDiag();
+      log('WebSocket 错误');
+    };
+  }
+
+  function scheduleReconnect() {
+    if (S.reconnectTimer) return;
+    var delay = S.reconnectDelay;
+    S.reconnectDelay = Math.min(S.reconnectDelay * 2, 10000);
+    DIAG.tries += 1;
+    DIAG.ws = '重连等待 ' + Math.round(delay / 1000) + 's';
+    renderDiag();
+    log('将在 ' + (delay / 1000) + 's 后重连');
+    setConn('重连中 ' + Math.round(delay / 1000) + 's', 'wait');
+    S.reconnectTimer = setTimeout(function () {
+      S.reconnectTimer = null;
+      connect();
+    }, delay);
+  }
+
+  // 强制重连：服务端剔除连接时用的是 terminate（不发 close 帧），
+  // 客户端会以为自己仍在线 —— 按 PTT 石沉大海正是这个原因。
+  function forceReconnect(reason) {
+    log('强制重连：' + reason);
+    DIAG.ws = '连接已失效，重连中';
+    S.connected = false;
+    S.isTalking = false;
+    S.peerSpeaking = false;
+    S.pttHeld = false;
+    stopHeartbeat();
+    if (S.ws) {
+      var old = S.ws;
+      S.ws = null;
+      try {
+        old.onclose = null;
+        old.onerror = null;
+        old.onmessage = null;
+        old.close();
+      } catch (e) { /* ignore */ }
+    }
+    setConn('已断开', 'off');
+    updateUI();
+    renderDiag();
+    scheduleReconnect();
+  }
+
+  function startHeartbeat() {
+    stopHeartbeat();
+    S.lastPongAt = Date.now();
+    S.heartbeatTimer = setInterval(function () {
+      sendJSON({ type: 'ping', t: Date.now() });
+      // 存活检测：连续 6s（3 次心跳）收不到 pong 就判定连接已死
+      if (S.lastPongAt && Date.now() - S.lastPongAt > 6000) {
+        forceReconnect('心跳超时（6s 未收到 pong）');
+      }
+    }, HEARTBEAT_MS);
+  }
+
+  function stopHeartbeat() {
+    if (S.heartbeatTimer) { clearInterval(S.heartbeatTimer); S.heartbeatTimer = null; }
+  }
+
+  // ---------------------------------------------------------------------
+  // 控制消息处理
+  // ---------------------------------------------------------------------
+  function handleControl(msg) {
+    switch (msg.type) {
+      case 'welcome':
+        S.clientId = msg.clientId;
+        log('已分配 clientId: ' + msg.clientId.slice(0, 8) + '…');
+        break;
+
+      case 'joined':
+        log('已加入频道：' + msg.channel);
+        break;
+
+      case 'state': {
+        S.lastState = msg;
+        var wasPeer = S.peerSpeaking;
+        S.isTalking = msg.speakerId === msg.you;
+        S.peerSpeaking = !!msg.speakerId && msg.speakerId !== msg.you;
+        if (S.peerSpeaking && !wasPeer) log('对方开始讲话，进入收听模式');
+        renderPeers(msg.clients, msg.you);
+        updateUI();
+        break;
+      }
+
+      case 'talk_granted':
+        S.isTalking = true;
+        S.frameBuf = new Float32Array(0); // 重新开始说话时清空残留
+        updateUI();
+        break;
+
+      case 'talk_denied':
+        S.isTalking = false;
+        setStatus('对方正在讲话', 'blocked');
+        toast(msg.message || '对方正在讲话');
+        log('发言被拒绝：' + (msg.message || 'busy'));
+        setTimeout(updateUI, 900);
+        break;
+
+      case 'notice':
+        toast(msg.message || '');
+        log('提示：' + (msg.message || ''));
+        break;
+
+      case 'pong':
+        S.lastPongAt = Date.now();
+        break;
+
+      case 'error':
+        log('服务端错误：' + (msg.message || msg.code));
+        break;
+
+      default:
+        break;
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // PTT 触摸 / 鼠标事件
+  // 移动端必须用 touchstart/touchend（click 有 ~300ms 延迟且易被滚动干扰）
+  // ---------------------------------------------------------------------
+  function pttDown(e) {
+    if (e && e.cancelable) e.preventDefault();
+    if (!S.running) return;
+    if (S.audioCtx && S.audioCtx.state === 'suspended') { S.audioCtx.resume().catch(function () {}); }
+    unlockAudioSession();
+    if (!S.connected) { toast('尚未连接服务器'); return; }
+    if (S.pttHeld) return;
+    if (S.peerSpeaking) { toast('对方正在讲话'); return; } // 本地预检，服务端仍会再校验
+    S.pttHeld = true;
+    S.pttHeldAt = Date.now();
+    S.frameBuf = new Float32Array(0);
+    S.txQueue.length = 0;          // 清掉上一轮的残留帧
+    S.txNextAt = Date.now();       // 节流时钟从按下这一刻起算
+    sendJSON({ type: 'ptt_start' });
+    log('PTT 按下');
+  }
+
+  function pttUp(e) {
+    if (!S.pttHeld) return;
+    if (e && e.cancelable) e.preventDefault();
+    S.pttHeld = false;
+    sendJSON({ type: 'ptt_stop' });
+    S.isTalking = false;
+    updateUI();
+    log('PTT 松开');
+  }
+
+  function bindPTT() {
+    pttBtn.addEventListener('touchstart', pttDown, { passive: false });
+    window.addEventListener('touchend', pttUp, { passive: false });
+    window.addEventListener('touchcancel', pttUp, { passive: false });
+    pttBtn.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+    // 桌面浏览器调试用鼠标事件
+    pttBtn.addEventListener('mousedown', function (e) { if (e.button === 0) pttDown(e); });
+    window.addEventListener('mouseup', pttUp);
+    window.addEventListener('blur', pttUp);   // 失焦兜底，避免 pttHeld 卡死
+  }
+
+  // ---------------------------------------------------------------------
+  // 会话启动
+  // ---------------------------------------------------------------------
+  function startSession() {
+    S.channel = (roomInput.value || '').trim() || QS.channel || 'default';
+    S.name = (nameInput.value || '').trim() || QS.name || '';
+
+    DIAG.mic = '未请求';
+    renderDiag();
+
+    if (!window.isSecureContext) {
+      alert('无法调用麦克风：当前页面不是 HTTPS。\n\n' +
+        '当前地址：' + location.origin + '\n\n' +
+        '浏览器（特别是 iOS Safari）只在「安全上下文」下开放麦克风 API。' +
+        'http:// + 局域网/公网 IP 会被判定为不安全，navigator.mediaDevices 直接不可用。\n\n' +
+        '解决方式（任选其一）：\n' +
+        '1) 用 https:// 域名访问（云服务器 + Nginx/证书）\n' +
+        '2) 用内网穿透隧道生成 https 地址（cloudflared / ngrok）\n' +
+        '3) 局域网自签证书（caddy / mkcert），并在 iPhone 上信任其根证书\n\n' +
+        '注意：只有 http://localhost 和 http://127.0.0.1 例外，浏览器允许调用麦克风。');
+      return;
+    }
+
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      alert('浏览器未提供麦克风接口（navigator.mediaDevices 不可用）。\n\n' +
+        '请确认：\n1) 页面用的是 HTTPS\n2) 浏览器为 iOS Safari / Chrome / Edge 等现代浏览器');
+      return;
+    }
+
+    startBtn.disabled = true;
+    startBtn.textContent = '正在请求麦克风…';
+    DIAG.mic = '请求中…';
+    renderDiag();
+
+    initAudio()
+      .then(startMic)
+      .then(function () {
+        S.running = true;
+        gate.classList.add('hidden');
+        unlockAudioSession();
+        log('会话开始：频道=' + S.channel + (S.name ? '，昵称=' + S.name : ''));
+        connect();
+        updateUI();
+      })
+      .catch(function (err) {
+        startBtn.disabled = false;
+        startBtn.textContent = '重试';
+        DIAG.mic = '失败: ' + (err && err.name ? err.name : '?') + ' / ' + (err && err.message ? err.message : err);
+        renderDiag();
+        alert('无法获取麦克风或音频上下文：\n' + (err && err.message ? err.message : err) +
+          '\n\n请确认：\n1) 使用 HTTPS 打开页面\n2) 已允许麦克风权限');
+      });
+  }
+
+  // ---------------------------------------------------------------------
+  // 音量 / 后台切换 / 生命周期
+  // ---------------------------------------------------------------------
+  // iOS 只允许在用户手势里 resume AudioContext —— 任何一次触摸都顺手试一下，
+  // 这样"收听中突然没声音"时，用户随便点一下屏幕就能恢复。
+  document.addEventListener('touchstart', function () {
+    if (S.audioCtx && S.audioCtx.state !== 'running') {
+      try { S.audioCtx.resume(); } catch (e) { /* ignore */ }
+    }
+  }, true);
+
+  volInput.addEventListener('input', function () {
+    var v = parseInt(volInput.value, 10);
+    volVal.textContent = v + '%';
+    if (S.playGain) S.playGain.gain.value = v / 100;
+  });
+
+  document.addEventListener('visibilitychange', function () {
+    if (document.hidden) {
+      log('页面进入后台：iOS 会挂起麦克风/网络，请保持前台');
+      if (S.pttHeld) { S.pttHeld = false; sendJSON({ type: 'ptt_stop' }); }
+      S.isTalking = false;
+      updateUI();
+    } else {
+      log('回到前台');
+      if (S.audioCtx && S.audioCtx.state === 'suspended') { S.audioCtx.resume().catch(function () {}); }
+      if (!S.connected) connect();
+      // 后台期间连接很可能已被服务端剔除（且不发 close 帧），主动查活
+      else if (S.lastPongAt && Date.now() - S.lastPongAt > 6000) forceReconnect('回到前台时心跳已超时');
+    }
+  });
+
+  window.addEventListener('pagehide', function () {
+    if (S.pttHeld) sendJSON({ type: 'ptt_stop' });
+  });
+
+  // ---------------------------------------------------------------------
+  // 初始化
+  // ---------------------------------------------------------------------
+  (function prefill() {
+    applyURLParams();
+  })();
+  roomInput.addEventListener('input', function () { userEdited = true; });
+  nameInput.addEventListener('input', function () { userEdited = true; });
+
+  bindPTT();
+  startBtn.addEventListener('click', startSession);
+  startTxPacer();
+
+  // 「重新获取后端地址」：隧道地址变了但 endpoint.json 还没更新到时，手动重取
+  (function () {
+    var btn = document.getElementById('refetchBtn');
+    if (!btn) return;
+    btn.addEventListener('click', function () {
+      btn.textContent = '获取中…';
+      loadEndpoint().then(function (ok) {
+        btn.textContent = ok ? '✓ 已更新' : '✗ 获取失败';
+        toast(ok ? '后端地址已更新' : '获取失败，请稍后重试');
+        setTimeout(function () { btn.textContent = '↻ 重新获取后端地址'; }, 1800);
+      });
+    });
+  })();
+
+  loadEndpoint();
+  if (resetBtn) resetBtn.addEventListener('click', backToGate);
+  if (testBtn) testBtn.addEventListener('click', playTestTone);
+
+  // Safari 从 bfcache / 会话恢复页面时，DOM（含已隐藏的入口页）会被原样还原，
+  // 但里面的频道/昵称还是上一次会话的值 —— 必须用当前 URL 参数重新校正并重连。
+  window.addEventListener('pageshow', function (ev) {
+    var restored = !!(ev && ev.persisted);
+    log('pageshow（persisted=' + restored + '）');
+    applyURLParams();
+    if (S.running) {
+      var dead = !S.ws || (S.ws.readyState !== 0 && S.ws.readyState !== 1);
+      if (dead) {
+        S.ws = null;
+        S.connected = false;
+        connect();
+      }
+    }
+    updateUI();
+    renderDiag();
+  });
+  updateUI();
+  log('就绪：填写频道与昵称后点击「开始 / 连接」');
+  renderDiag();
+
+  if (!window.isSecureContext) {
+    var warnEl = document.getElementById('secureWarn');
+    var warnOrigin = document.getElementById('warnOrigin');
+    if (warnOrigin) warnOrigin.textContent = location.origin;
+    if (warnEl) warnEl.classList.add('show');
+    log('警告：当前非安全上下文（' + location.origin + '），iOS Safari 无法调用麦克风！');
+  }
+
+
+
+})();
+</script>
+</body>
+</html>
