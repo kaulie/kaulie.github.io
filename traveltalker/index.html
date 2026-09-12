@@ -261,6 +261,8 @@
   // ---------------------------------------------------------------------
   var OUT_RATE = 16000;       // 目标采样率
   var FRAME_SAMPLES = 320;    // 20ms
+  // 页面版本：诊断面板第一行会显示 —— 用来确认手机跑的是不是最新页面（Safari 会缓存页面！）
+  var PAGE_VERSION = 'v4 · 2026-09-12 · 会话顺序+自检';
   var JITTER_FRAMES = 6;      // 抖动缓冲目标 ~120ms（发送侧已改 20ms 匀速，这里留网络抖动余量）
   var HEARTBEAT_MS = 2000;    // 心跳间隔
   var MAX_LEAD_SEC = 0.5;     // 播放缓冲上限，超出则重置（防止延迟累积）
@@ -312,6 +314,17 @@
     lastPongAt: 0,
     endpointWss: null,
     pttHeldAt: 0,
+    micSilentWarned: false,  // 说话中一直采不到声音，已提示过
+    rxWatchRx: -1,           // 「对方讲话但收不到音频」看门狗
+    rxWatchAt: 0,
+    rxWarned: false,
+    rxSilentWarned: false,   // 「收到的声音是静音」已提示过
+    peerSpeakAt: 0,          // 对方本轮开始讲话的时间
+    ctxWarnAt: 0,            // 「音频被系统挂起」提示节流
+    micTrack: null,          // MediaStreamTrack（看被系统静音/结束）
+    micRearms: 0,            // 麦克风自愈次数
+    micRearmAt: 0,
+    micEverHeard: false,     // 本会话是否采到过真实声音
     txQueue: [],
     txTimer: null,
     txNextAt: 0
@@ -425,12 +438,13 @@
     if (jb >= 3 && jb <= 40) JITTER_FRAMES = jb;
   })();
 
-  var DIAG = { mic: '未请求', ws: '未开始', tries: 0, rx: 0, playErr: 0, audioSess: '', outLevel: '0.00', auth: '未校验', micPeak: '0.00', rxPeak: '0.00', endpoint: '' };
+  var DIAG = { mic: '未请求', ws: '未开始', tries: 0, rx: 0, playErr: 0, audioSess: '', outLevel: '0.00', auth: '未校验', micPeak: '0.00', rxPeak: '0.00', micTrack: '未获取', endpoint: '' };
 
   function renderDiag() {
     var el = document.getElementById('diag');
     if (!el) return;
     el.textContent =
+      '版本: ' + PAGE_VERSION + '\n' +
       '地址: ' + location.origin + '\n' +
       '安全上下文: ' + (window.isSecureContext ? '是' : '否（麦克风会被禁用）') + '\n' +
       'mediaDevices: ' + (navigator.mediaDevices && navigator.mediaDevices.getUserMedia ? '可用' : '不可用') + '\n' +
@@ -446,6 +460,7 @@
       '输出电平: ' + DIAG.outLevel + '  ← 按「测试」时应明显跳动\n' +
       '本机麦克风电平: ' + DIAG.micPeak + '  ← 按住 PTT 说话时应明显跳动\n' +
       '麦克风: ' + DIAG.mic + '\n' +
+      '麦克风轨道: ' + DIAG.micTrack + '\n' +
       'WebSocket: ' + DIAG.ws + '\n' +
       '重连次数: ' + DIAG.tries;
   }
@@ -536,8 +551,12 @@
   function initAudio() {
     if (S.audioCtx) return Promise.resolve();
     var ctx;
+    // 注意：**不要**强制 sampleRate=16000。
+    // iOS 上如果 AudioContext 用了非硬件采样率，createMediaStreamSource（麦克风）
+    // 可能直接采到静音（现象：电平条不动、但播放/网络都正常）—— 真机踩过。
+    // 发送侧本来就有内置线性重采样（48k→16k），所以用硬件采样率更稳。
     try {
-      ctx = new SC.AudioContext({ sampleRate: OUT_RATE, latencyHint: 'interactive' });
+      ctx = new SC.AudioContext({ latencyHint: 'interactive' });
     } catch (e) {
       ctx = new SC.AudioContext();
     }
@@ -596,16 +615,101 @@
       video: false
     };
     return navigator.mediaDevices.getUserMedia(constraints).then(function (stream) {
-      S.micStream = stream;
-      S.micSource = S.audioCtx.createMediaStreamSource(stream);
-      // ScriptProcessorNode 兼容性最好（含 iOS Safari）；如后续要升级可换 AudioWorklet。
-      S.processor = S.audioCtx.createScriptProcessor(4096, 1, 1);
-      S.processor.onaudioprocess = onAudioProcess;
-      S.micSource.connect(S.processor);
-      S.processor.connect(S.mixer);
+      buildMicChain(stream);
       DIAG.mic = '已获取（AudioContext ' + S.audioCtx.sampleRate + 'Hz）';
       renderDiag();
       log('麦克风已就绪（AEC/降噪/AGC 已开启）');
+    });
+  }
+
+  // 把麦克风流接进处理链（首次获取 / 自愈重取 共用）
+  function buildMicChain(stream) {
+    S.micStream = stream;
+    S.micSource = S.audioCtx.createMediaStreamSource(stream);
+    // ScriptProcessorNode 兼容性最好（含 iOS Safari）；如后续要升级可换 AudioWorklet。
+    S.processor = S.audioCtx.createScriptProcessor(4096, 1, 1);
+    S.processor.onaudioprocess = onAudioProcess;
+    S.micSource.connect(S.processor);
+    S.processor.connect(S.mixer);
+    attachMicTrackDiag(stream);
+  }
+
+  // 记录麦克风轨道的真实状态：被系统静音（muted）/ 被结束（ended）都能看出来
+  function attachMicTrackDiag(stream) {
+    try {
+      var tracks = (stream && stream.getAudioTracks) ? stream.getAudioTracks() : [];
+      if (!tracks || !tracks.length) { DIAG.micTrack = '无音频轨道'; return; }
+      var t = tracks[0];
+      S.micTrack = t;
+      t.onmute = function () { log('警告：麦克风轨道被系统静音（muted=true）'); renderDiag(); };
+      t.onunmute = function () { log('麦克风轨道恢复（muted=false）'); renderDiag(); };
+      t.onended = function () { log('警告：麦克风轨道结束（ended）'); renderDiag(); };
+      DIAG.micTrack = micTrackDesc();
+    } catch (e) {
+      DIAG.micTrack = '读取失败: ' + (e && e.message ? e.message : e);
+    }
+  }
+
+  function micTrackDesc() {
+    var t = S.micTrack;
+    if (!t) return '无';
+    var st = {};
+    try { st = (t.getSettings && t.getSettings()) || {}; } catch (e) { st = {}; }
+    return 'readyState=' + t.readyState + ' enabled=' + t.enabled + ' muted=' + t.muted +
+      ' rate=' + (st.sampleRate || '-') + ' ch=' + (st.channelCount || '-');
+  }
+
+  // 麦克风自愈：说话中一直采到"数字静音"时，停掉旧流、重新拿一次麦克风并重建采集链
+  // （iOS 上常见于：蓝牙麦克风、被别的 App 占用、会话被抢）
+  function rearmMic(reason) {
+    if (!S.audioCtx || !S.running || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return;
+    if (S.micRearms >= 2) return;
+    S.micRearms += 1;
+    S.micRearmAt = Date.now();
+    log('麦克风自愈 #' + S.micRearms + '：' + reason);
+    try {
+      if (S.processor) { try { S.processor.onaudioprocess = null; S.processor.disconnect(); } catch (e) { /* ignore */ } }
+      if (S.micSource) { try { S.micSource.disconnect(); } catch (e) { /* ignore */ } }
+      if (S.micStream) {
+        var tr = S.micStream.getTracks();
+        for (var i = 0; i < tr.length; i++) { try { tr[i].stop(); } catch (e) { /* ignore */ } }
+      }
+    } catch (e) { /* ignore */ }
+    S.processor = null; S.micSource = null; S.micStream = null; S.micTrack = null;
+    var retry = function (c) { return navigator.mediaDevices.getUserMedia(c); };
+    retry({ audio: { channelCount: 1, echoCancellation: false, noiseSuppression: false, autoGainControl: false }, video: false })
+      ['catch'](function () { return retry({ audio: true, video: false }); })
+      .then(function (stream) {
+        buildMicChain(stream);
+        unlockAudioSession(true);   // 重新定回扬声器会话
+        DIAG.mic = '已重新获取（自愈 #' + S.micRearms + '）';
+        renderDiag();
+        log('麦克风已重新打开，请再说一次');
+        toast('已重新打开麦克风，请再说一次');
+      })
+      ['catch'](function (e) {
+        DIAG.mic = '自愈失败: ' + (e && e.message ? e.message : e);
+        renderDiag();
+        log('麦克风自愈失败：' + (e && e.message ? e.message : e));
+      });
+  }
+
+  // 自检上报：关键状态通过 WebSocket 报给服务端（写进服务端日志，排障不必在手机上找字）
+  function sendDiagReport() {
+    if (!S.connected || !S.ws || S.ws.readyState !== 1) return;
+    sendJSON({
+      type: 'diag',
+      ver: PAGE_VERSION,
+      ctx: S.audioCtx ? (S.audioCtx.sampleRate + '/' + S.audioCtx.state) : 'none',
+      mic: micTrackDesc(),
+      micPeak: DIAG.micPeak,
+      rxPeak: DIAG.rxPeak,
+      out: DIAG.outLevel,
+      rx: DIAG.rx,
+      talk: S.isTalking ? 1 : 0,
+      peer: S.peerSpeaking ? 1 : 0,
+      rearm: S.micRearms,
+      heard: S.micEverHeard ? 1 : 0
     });
   }
 
@@ -619,6 +723,7 @@
       if (v > peak) peak = v;
     }
     DIAG.micPeak = peak.toFixed(2);
+    if (peak >= 0.01) S.micEverHeard = true;
     levelEl.style.width = Math.min(100, Math.round(peak * 140)) + '%';
 
     if (!S.running) return;
@@ -789,6 +894,62 @@
     }
 
     if (!gate.classList.contains('hidden')) renderDiag();
+
+    // ---- 自动判故障：把"哪一侧出问题"直接说出来，不用猜 ----
+    // ① 我在说话，但 1.5s 都没采到声音 → 对方必然听不到
+    if (S.running && S.isTalking && !S.micSilentWarned && S.pttHeldAt && Date.now() - S.pttHeldAt > 1500) {
+      if (parseFloat(DIAG.micPeak) < 0.01) {
+        S.micSilentWarned = true;
+        log('警告：按住说话 1.5s，麦克风电平仍是 0（权限 / 被别的 App 占用 / 音频会话）');
+        toast('你的麦克风没采到声音（对方听不到）');
+      }
+    }
+    // ①b 说话了、但本会话一直没采到过任何真实声音 → 自动重取麦克风（最多 2 次）
+    if (S.running && S.isTalking && !S.micEverHeard && S.pttHeldAt &&
+        Date.now() - S.pttHeldAt > 2500 && S.micRearms < 2 && Date.now() - S.micRearmAt > 4000) {
+      rearmMic('按住说话 2.5s，采集电平一直是 0');
+    }
+
+    // ② 对方讲话期间，两种情况都能一口断定是谁的问题：
+    //    帧不涨   → 对方根本没发出来（对方发送侧）
+    //    帧在涨但一直是静音 → 对方麦克风没采到声音（对方采集侧）
+    if (S.running && S.peerSpeaking) {
+      if (!S.peerSpeakAt) S.peerSpeakAt = Date.now();
+      if (S.rxWatchRx !== DIAG.rx) {
+        S.rxWatchRx = DIAG.rx;
+        S.rxWatchAt = Date.now();
+        S.rxWarned = false;
+        if (parseFloat(DIAG.rxPeak) >= 0.01) S.rxSilentWarned = false;   // 有真声音了，解除静音告警
+      } else if (S.rxWatchAt && Date.now() - S.rxWatchAt > 2000 && !S.rxWarned) {
+        S.rxWarned = true;
+        log('警告：对方讲话 2s 但收帧数没有增加（对方的麦克风 / 发送侧问题）');
+        toast('对方在讲话，但本机没收到音频');
+      }
+      // 注意：必须"最近确实收到过帧"，否则"一帧都没收到"会误报成静音
+      if (!S.rxSilentWarned && DIAG.rx > 0 && S.rxWatchAt && Date.now() - S.rxWatchAt < 1500 &&
+          Date.now() - S.peerSpeakAt > 1500 && parseFloat(DIAG.rxPeak) < 0.01) {
+        S.rxSilentWarned = true;
+        log('警告：收到的音频一直是静音（对方麦克风没采到声音），本机播放没问题');
+        toast('对方的声音是静音（对方麦克风没采到）');
+      }
+    } else {
+      S.rxWatchRx = -1;
+      S.rxWatchAt = 0;
+      S.rxWarned = false;
+      S.rxSilentWarned = false;
+      S.peerSpeakAt = 0;
+    }
+
+    // ③ 音频上下文被系统挂起：iOS 只允许在「用户手势」里恢复 → 提示点屏幕
+    //    （点「测试」能听到、但对方说话听不到，往往就是这个）
+    if (S.running && S.audioCtx && S.audioCtx.state !== 'running' && Date.now() - S.ctxWarnAt > 5000) {
+      S.ctxWarnAt = Date.now();
+      log('警告：AudioContext 处于 ' + S.audioCtx.state + '（系统挂起），点屏幕恢复');
+      toast('声音被系统挂起：点一下屏幕恢复');
+    }
+
+    // 自检每 5s 上报一次（服务端会打一行日志，排障直接看服务端）
+    if (S.running && _uptime % 5 === 0) sendDiagReport();
 
     var liveEl = document.getElementById('live');
     if (liveEl && S.running) {
@@ -1299,6 +1460,7 @@
     if (S.peerSpeaking) { toast('对方正在讲话'); return; } // 本地预检，服务端仍会再校验
     S.pttHeld = true;
     S.pttHeldAt = Date.now();
+    S.micSilentWarned = false;   // 每次按下重新判断麦克风有没有声音
     S.frameBuf = new Float32Array(0);
     S.txQueue.length = 0;          // 清掉上一轮的残留帧
     S.txNextAt = Date.now();       // 节流时钟从按下这一刻起算
@@ -1421,6 +1583,7 @@
         connect();
         updateUI();
         renderDiag();
+        sendDiagReport();
       })
       ['catch'](function (err) {
         var name = (err && err.name) || '';
