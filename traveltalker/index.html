@@ -312,6 +312,10 @@
     lastPongAt: 0,
     endpointWss: null,
     pttHeldAt: 0,
+    micSilentWarned: false,  // 说话中一直采不到声音，已提示过
+    rxWatchRx: -1,           // 「对方讲话但收不到音频」看门狗
+    rxWatchAt: 0,
+    rxWarned: false,
     txQueue: [],
     txTimer: null,
     txNextAt: 0
@@ -789,6 +793,32 @@
     }
 
     if (!gate.classList.contains('hidden')) renderDiag();
+
+    // ---- 自动判故障：把"哪一侧出问题"直接说出来，不用猜 ----
+    // ① 我在说话，但 1.5s 都没采到声音 → 对方必然听不到
+    if (S.running && S.isTalking && !S.micSilentWarned && S.pttHeldAt && Date.now() - S.pttHeldAt > 1500) {
+      if (parseFloat(DIAG.micPeak) < 0.01) {
+        S.micSilentWarned = true;
+        log('警告：按住说话 1.5s，麦克风电平仍是 0（权限 / 被别的 App 占用 / 音频会话）');
+        toast('你的麦克风没采到声音（对方听不到）');
+      }
+    }
+    // ② 对方在讲话，但 2s 没收到任何音频帧 → 问题在对方的发送侧
+    if (S.running && S.peerSpeaking) {
+      if (S.rxWatchRx !== DIAG.rx) {
+        S.rxWatchRx = DIAG.rx;
+        S.rxWatchAt = Date.now();
+        S.rxWarned = false;
+      } else if (S.rxWatchAt && Date.now() - S.rxWatchAt > 2000 && !S.rxWarned) {
+        S.rxWarned = true;
+        log('警告：对方讲话 2s 但收帧数没有增加（对方的麦克风 / 发送侧问题）');
+        toast('对方在讲话，但本机没收到音频');
+      }
+    } else {
+      S.rxWatchRx = -1;
+      S.rxWatchAt = 0;
+      S.rxWarned = false;
+    }
 
     var liveEl = document.getElementById('live');
     if (liveEl && S.running) {
@@ -1299,6 +1329,7 @@
     if (S.peerSpeaking) { toast('对方正在讲话'); return; } // 本地预检，服务端仍会再校验
     S.pttHeld = true;
     S.pttHeldAt = Date.now();
+    S.micSilentWarned = false;   // 每次按下重新判断麦克风有没有声音
     S.frameBuf = new Float32Array(0);
     S.txQueue.length = 0;          // 清掉上一轮的残留帧
     S.txNextAt = Date.now();       // 节流时钟从按下这一刻起算
