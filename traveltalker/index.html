@@ -425,7 +425,7 @@
     if (jb >= 3 && jb <= 40) JITTER_FRAMES = jb;
   })();
 
-  var DIAG = { mic: '未请求', ws: '未开始', tries: 0, rx: 0, playErr: 0, audioSess: '', outLevel: '0.00', auth: '未校验', endpoint: '' };
+  var DIAG = { mic: '未请求', ws: '未开始', tries: 0, rx: 0, playErr: 0, audioSess: '', outLevel: '0.00', auth: '未校验', micPeak: '0.00', rxPeak: '0.00', endpoint: '' };
 
   function renderDiag() {
     var el = document.getElementById('diag');
@@ -441,9 +441,10 @@
       '口令: ' + (S.pass ? '已填（' + S.pass.length + ' 位）' : '未填 ← 服务器若设了口令会连不上') + '\n' +
       '口令校验: ' + DIAG.auth + '\n' +
       'AudioContext: ' + (S.audioCtx ? (S.audioCtx.state + ' @ ' + S.audioCtx.sampleRate + 'Hz') : '未创建') + '\n' +
-      '收到音频帧: ' + DIAG.rx + (DIAG.playErr ? '（播放异常 ' + DIAG.playErr + ' 次）' : '') + '\n' +
+      '收到音频帧: ' + DIAG.rx + ' 帧（最近峰值 ' + DIAG.rxPeak + '）' + (DIAG.playErr ? '（播放异常 ' + DIAG.playErr + ' 次）' : '') + '\n' +
       '音频会话解锁: ' + (DIAG.audioSess || '未尝试') + '\n' +
       '输出电平: ' + DIAG.outLevel + '  ← 按「测试」时应明显跳动\n' +
+      '本机麦克风电平: ' + DIAG.micPeak + '  ← 按住 PTT 说话时应明显跳动\n' +
       '麦克风: ' + DIAG.mic + '\n' +
       'WebSocket: ' + DIAG.ws + '\n' +
       '重连次数: ' + DIAG.tries;
@@ -611,12 +612,13 @@
   function onAudioProcess(e) {
     var input = e.inputBuffer.getChannelData(0);
 
-    // 采集电平指示
+    // 采集电平指示（同时记进诊断：判断"对方没声音"是发送侧还是接收侧）
     var peak = 0;
     for (var i = 0; i < input.length; i += 8) {
       var v = Math.abs(input[i]);
       if (v > peak) peak = v;
     }
+    DIAG.micPeak = peak.toFixed(2);
     levelEl.style.width = Math.min(100, Math.round(peak * 140)) + '%';
 
     if (!S.running) return;
@@ -692,7 +694,13 @@
   }
 
   // iOS 的 Web Audio 默认走 ambient 音频会话，会被侧边静音开关掐掉（<audio> 不受影响）。
-  // 播放一段静音 <audio> 可把会话切到 playback，从而解除静音。必须在用户手势里调用。
+  // 播放一段静音 <audio> 可把会话切到 playback，从而解除静音 / 把声音送到扬声器。
+  // 必须在用户手势里先播一次，之后这个元素才有播放权限。
+  //
+  // force=true：暂停→重播一次，强制重新激活会话。
+  // iOS 上「先开麦克风再放声音」与「先放声音再开麦克风」拿到的是**不同的输出路由**
+  // （后者可能把对讲声音送进听筒、听着像"没声音"），所以拿到麦克风之后、以及收到
+  // 第一帧对讲音频时都要再 force 一次。
   var SILENT_WAV = (function () {
     try {
       var n = 800; // 0.1s @ 8000Hz 静音
@@ -711,7 +719,7 @@
     } catch (e) { return ''; }
   })();
 
-  function unlockAudioSession() {
+  function unlockAudioSession(force) {
     if (!SILENT_WAV) return;
     try {
       if (!S.unlockEl) {
@@ -722,9 +730,21 @@
         a.src = SILENT_WAV;
         S.unlockEl = a;
       }
+      if (force && !S.unlockEl.paused) {
+        try { S.unlockEl.pause(); S.unlockEl.currentTime = 0; } catch (e) { /* ignore */ }
+      }
       var p = S.unlockEl.play();
-      if (p && p.catch) p.catch(function () {});
-      DIAG.audioSess = '已尝试解锁';
+      if (p && p.then) {
+        p.then(function () {
+          DIAG.audioSess = '已解锁（播放中）';
+          renderDiag();
+        }, function (e) {
+          DIAG.audioSess = '解锁失败: ' + (e && e.message ? e.message : e);
+          renderDiag();
+        });
+      } else {
+        DIAG.audioSess = '已解锁（播放中）';
+      }
     } catch (e) {
       DIAG.audioSess = '解锁失败: ' + e.message;
     }
@@ -772,7 +792,8 @@
 
     var liveEl = document.getElementById('live');
     if (liveEl && S.running) {
-      liveEl.textContent = '运行 ' + _uptime + 's · 收帧 ' + DIAG.rx + ' · 电平 ' + DIAG.outLevel +
+      liveEl.textContent = '运行 ' + _uptime + 's · 收帧 ' + DIAG.rx + '(' + DIAG.rxPeak + ')' +
+        ' · 麦克风 ' + DIAG.micPeak + ' · 电平 ' + DIAG.outLevel +
         ' · 音频 ' + (S.audioCtx ? S.audioCtx.state : '未初始化');
     }
   }, 1000);
@@ -816,9 +837,14 @@
     }
     try {
       var f32 = new Float32Array(int16.length);
+      var rxMax = 0;
       for (var i = 0; i < int16.length; i++) {
-        f32[i] = int16[i] < 0 ? int16[i] / 0x8000 : int16[i] / 0x7fff;
+        var s16 = int16[i];
+        var a16 = s16 < 0 ? -s16 : s16;
+        if (a16 > rxMax) rxMax = a16;
+        f32[i] = s16 < 0 ? s16 / 0x8000 : s16 / 0x7fff;
       }
+      DIAG.rxPeak = (rxMax / 32768).toFixed(2);
       // 关键：AudioBuffer 必须用 ctx.sampleRate 创建。
       // iOS 上 createBuffer() 传入与上下文不同的采样率会抛
       // NotSupportedError（"The operation is not supported"），
@@ -845,7 +871,12 @@
       S.nextPlayTime += buffer.duration;
 
       DIAG.rx += 1;
-      if (DIAG.rx === 1) { log('收到第一帧音频，开始播放'); renderDiag(); }
+      if (DIAG.rx === 1) {
+        log('收到第一帧音频，开始播放');
+        // 收到第一帧时再强制激活一次播放会话：确保声音走扬声器而不是听筒
+        unlockAudioSession(true);
+        renderDiag();
+      }
     } catch (err) {
       DIAG.playErr += 1;
       if (DIAG.playErr <= 3) { log('播放异常: ' + err.message); renderDiag(); }
@@ -1345,6 +1376,7 @@
     if (audioReady && audioReady['catch']) {
       audioReady['catch'](function (e) { DIAG.mic = '音频初始化失败: ' + (e && e.message ? e.message : e); });
     }
+    // 手势里先播一次静音 <audio>：拿到它的播放权限（否则后面 iOS 不给放）
     unlockAudioSession();
 
     if (!S.authed) {
@@ -1383,7 +1415,8 @@
       .then(function () {
         S.running = true;
         gate.classList.add('hidden');
-        unlockAudioSession();
+        // 拿到麦克风之后再激活一次音频会话：iOS 上这才把播放路由定到扬声器
+        unlockAudioSession(true);
         log('会话开始：频道=' + S.channel + (S.name ? '，昵称=' + S.name : ''));
         connect();
         updateUI();
