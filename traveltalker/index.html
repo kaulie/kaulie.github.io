@@ -155,6 +155,22 @@
   }
   .warn.show { display: block; }
   .warn code { font-size: 11px; color: #fff; word-break: break-all; }
+  /* 口令校验状态：必须先通过校验，才允许请求麦克风、才进主界面 */
+  .authstate {
+    display: none; margin: 0 0 12px; padding: 9px 12px; border-radius: 10px;
+    text-align: left; font-size: 12px; line-height: 1.5;
+    background: rgba(255,255,255,.04); border: 1px solid #2b3b5e; color: var(--muted);
+  }
+  .authstate.show { display: block; }
+  .authstate.checking {
+    color: var(--amber); background: rgba(255,176,32,.12); border-color: rgba(255,176,32,.5);
+  }
+  .authstate.ok {
+    color: var(--green); background: rgba(46,204,113,.12); border-color: rgba(46,204,113,.5);
+  }
+  .authstate.err {
+    color: #ffd7db; background: rgba(255,77,94,.14); border-color: rgba(255,77,94,.55);
+  }
   .diag {
     margin: 12px 0 0; padding: 8px 10px; border-radius: 8px; text-align: left;
     font-family: ui-monospace, Menlo, monospace; font-size: 10px; line-height: 1.65;
@@ -219,6 +235,7 @@
     <label class="field">频道口令
       <input id="passInput" type="password" placeholder="留空表示服务器未设口令" autocomplete="off" autocapitalize="off" spellcheck="false">
     </label>
+    <div id="authState" class="authstate"></div>
     <p id="secureWarn" class="warn">
       <b>无法调用麦克风：当前不是 HTTPS。</b><br>
       浏览器（尤其 iOS Safari）只在安全上下文下开放麦克风 API，
@@ -228,7 +245,8 @@
     <button id="startBtn">开始 / 连接</button>
     <button id="refetchBtn" class="mini-btn" style="width:100%;margin-top:8px;padding:10px">↻ 重新获取后端地址</button>
     <div id="diag" class="diag">诊断：初始化中…</div>
-    <p class="tiny">需要 HTTPS 页面（Safari 调用麦克风强制 HTTPS）。<br>使用时请保持页面在前台，锁屏或切后台会释放麦克风。</p>
+    <p class="tiny">顺序：<b>先校验口令 → 再授权麦克风 → 才进对讲界面</b>，口令不通会在上面直接报错。<br>
+      需要 HTTPS 页面（Safari 调用麦克风强制 HTTPS）。<br>使用时请保持页面在前台，锁屏或切后台会释放麦克风。</p>
   </div>
 </div>
 
@@ -265,6 +283,13 @@
     channel: 'default',
     name: '',
     pass: '',
+    authed: false,        // 服务端是否已确认口令（收到 joined）
+    authPass: '',         // 最近一次校验通过时用的口令
+    authError: null,      // {code, message}
+    authChecking: false,  // 正在等口令校验结果
+    helloKey: '',         // 最近一次 hello 的参数指纹（避免重复发送、重复计失败）
+    helloPass: '',        // 最近一次 hello 带的口令
+    lockTimer: null,      // 口令被锁定时的倒计时
     noReconnect: false,
     audioCtx: null,
     micStream: null,
@@ -400,7 +425,7 @@
     if (jb >= 3 && jb <= 40) JITTER_FRAMES = jb;
   })();
 
-  var DIAG = { mic: '未请求', ws: '未开始', tries: 0, rx: 0, playErr: 0, audioSess: '', outLevel: '0.00', endpoint: '' };
+  var DIAG = { mic: '未请求', ws: '未开始', tries: 0, rx: 0, playErr: 0, audioSess: '', outLevel: '0.00', auth: '未校验', endpoint: '' };
 
   function renderDiag() {
     var el = document.getElementById('diag');
@@ -414,6 +439,7 @@
       '实际使用: channel=' + (S.channel || '-') + ' name=' + (S.name || '-') + ' 抖动缓冲=' + JITTER_FRAMES + '帧\n' +
       '后端地址: ' + (DIAG.endpoint || S.endpointWss || '（同源，未取到 endpoint.json）') + '\n' +
       '口令: ' + (S.pass ? '已填（' + S.pass.length + ' 位）' : '未填 ← 服务器若设了口令会连不上') + '\n' +
+      '口令校验: ' + DIAG.auth + '\n' +
       'AudioContext: ' + (S.audioCtx ? (S.audioCtx.state + ' @ ' + S.audioCtx.sampleRate + 'Hz') : '未创建') + '\n' +
       '收到音频帧: ' + DIAG.rx + (DIAG.playErr ? '（播放异常 ' + DIAG.playErr + ' 次）' : '') + '\n' +
       '音频会话解锁: ' + (DIAG.audioSess || '未尝试') + '\n' +
@@ -455,11 +481,21 @@
     }
     S.txQueue.length = 0;
     stopHeartbeat();
+    // 回到设置页 = 这次会话结束：口令必须重新校验
+    S.authed = false;
+    S.authPass = '';
+    S.authError = null;
+    S.authChecking = false;
+    S.helloKey = '';
+    if (S.lockTimer) { clearInterval(S.lockTimer); S.lockTimer = null; }
+    settleAuth(false, { code: 'offline', message: '已返回设置页' });
+    setStartBtn('开始 / 连接', false);
     gate.classList.remove('hidden');
     DIAG.ws = '已手动断开';
     DIAG.tries = 0;
     updateUI();
     renderDiag();
+    renderAuthState();
     log('已断开并返回设置页');
   }
 
@@ -862,6 +898,140 @@
       });
   }
 
+  // ---------------------------------------------------------------------
+  // 口令校验：先校验口令 → 再授权麦克风 → 才进主界面
+  //
+  // 复用已有协议（hello / joined / error:auth_failed|auth_locked），
+  // 不新增服务端接口 —— 服务端不用改，老服务端也能正常跑。
+  // ---------------------------------------------------------------------
+  var authWaiters = [];
+
+  function helloKeyNow() {
+    return S.channel + '\u0000' + S.name + '\u0000' + S.pass;
+  }
+
+  function sendHello() {
+    S.helloKey = helloKeyNow();
+    S.helloPass = S.pass;
+    S.authChecking = true;   // 等服务端回 joined / auth_failed
+    sendJSON({ type: 'hello', channel: S.channel, name: S.name, pass: S.pass });
+    DIAG.auth = '校验中（' + (S.pass ? '口令 ' + S.pass.length + ' 位' : '未带口令') + '）';
+    renderAuthState();
+  }
+
+  function settleAuth(ok, err) {
+    S.authChecking = false;
+    var list = authWaiters;
+    authWaiters = [];
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].timer) clearTimeout(list[i].timer);
+      if (ok) list[i].resolve();
+      else list[i].reject(err || { code: 'auth_failed', message: '口令校验未通过' });
+    }
+  }
+
+  // 等这一轮校验结果：收到 joined = 通过；收到 auth_failed/auth_locked = 失败
+  function waitAuth(timeoutMs) {
+    if (S.authed) return Promise.resolve();
+    if (S.authError && (S.authError.code === 'auth_failed' || S.authError.code === 'auth_locked')) {
+      return Promise.reject(S.authError);
+    }
+    var ms = timeoutMs || 8000;
+    return new Promise(function (resolve, reject) {
+      var w = { resolve: resolve, reject: reject, timer: null };
+      w.timer = setTimeout(function () {
+        var idx = authWaiters.indexOf(w);
+        if (idx >= 0) authWaiters.splice(idx, 1);
+        reject({ code: 'timeout', message: '连接服务器超时（' + Math.round(ms / 1000) + 's 内没有回应）' });
+      }, ms);
+      authWaiters.push(w);
+    });
+  }
+
+  function setStartBtn(text, disabled) {
+    startBtn.textContent = text;
+    startBtn.disabled = !!disabled;
+  }
+
+  function renderAuthState() {
+    var el = document.getElementById('authState');
+    if (!el) return;
+    var cls, text;
+    if (S.authError) {
+      cls = 'err';
+      if (S.authError.code === 'auth_locked') text = '⛔ ' + S.authError.message;
+      else if (S.authError.code === 'timeout' || S.authError.code === 'offline') {
+        text = '⚠️ ' + S.authError.message + '（点「重新校验」再试）';
+      } else text = '❌ ' + S.authError.message;
+      DIAG.auth = '未通过：' + S.authError.message;
+    } else if (S.authed) {
+      cls = 'ok';
+      text = '✅ 口令已通过校验（频道 ' + S.channel + '）。点下面按钮授权麦克风即可进入对讲。';
+      DIAG.auth = '已通过';
+    } else if (S.authChecking) {
+      cls = 'checking';
+      text = '正在校验口令…（通过后才会请求麦克风）';
+      DIAG.auth = '校验中';
+    } else {
+      cls = 'checking';
+      text = '点「开始 / 连接」：先校验口令，通过后才请求麦克风、才进界面。';
+      DIAG.auth = '未校验';
+    }
+    el.className = 'authstate show ' + cls;
+    el.textContent = text;
+  }
+
+  // 让当前连接按最新参数发一次 hello（已连上就补发，没连上则等 onopen 自动发）
+  function ensureHello() {
+    if (S.ws && S.ws.readyState === 1) {
+      if (S.helloKey !== helloKeyNow() || !S.authChecking) sendHello();
+      return;
+    }
+    S.authChecking = true;
+    renderAuthState();
+    connect();
+  }
+
+  // 校验失败 / 被锁定：停在入口页 —— 不进主界面、不请求麦克风
+  function onAuthFail(err) {
+    var code = (err && err.code) || 'auth_failed';
+    var message = (err && err.message) || '口令错误，请确认后重试';
+    S.authed = false;
+    S.authChecking = false;
+    S.authError = { code: code, message: message };
+    renderAuthState();
+    renderDiag();
+    gate.classList.remove('hidden');
+    updateUI();
+    if (code === 'auth_locked') {
+      var m = /(\d+)/.exec(message);
+      startLockCountdown(m ? parseInt(m[1], 10) : 60);
+      toast('口令被锁定，请稍后再试');
+    } else {
+      setStartBtn('重新校验', false);
+    }
+    try { passInput.focus(); } catch (e) { /* ignore */ }
+  }
+
+  function startLockCountdown(sec) {
+    if (S.lockTimer) clearInterval(S.lockTimer);
+    var left = sec > 0 ? sec : 60;
+    var tick = function () {
+      if (left <= 0) {
+        clearInterval(S.lockTimer);
+        S.lockTimer = null;
+        S.authError = null;
+        renderAuthState();
+        setStartBtn('重新校验', false);
+        return;
+      }
+      setStartBtn('已锁定 ' + left + 's', true);
+      left -= 1;
+    };
+    tick();
+    S.lockTimer = setInterval(tick, 1000);
+  }
+
   function connect() {
     if (S.reconnectTimer) { clearTimeout(S.reconnectTimer); S.reconnectTimer = null; }
     if (S.ws && (S.ws.readyState === 0 || S.ws.readyState === 1)) return;
@@ -890,7 +1060,7 @@
       DIAG.ws = '已连接';
       renderDiag();
       log('WebSocket 已连接');
-      sendJSON({ type: 'hello', channel: S.channel, name: S.name, pass: S.pass });
+      sendHello();
       startHeartbeat();
       updateUI();
     };
@@ -917,6 +1087,8 @@
       DIAG.ws = '已断开 code=' + (ev && ev.code) + (ev && ev.reason ? ' ' + ev.reason : '');
       renderDiag();
       log('WebSocket 断开 (code=' + (ev && ev.code) + ')，准备重连…');
+      // 口令校验还在等结果时连接就断了：把这轮校验判为失败（会把错误显示在入口页）
+      settleAuth(false, { code: 'offline', message: '连接中断（code ' + (ev && ev.code) + '）' });
       scheduleReconnect();
     };
 
@@ -943,11 +1115,13 @@
     }, delay);
   }
 
-  // 口令错误：断开、停止自动重连，并回到入口页让用户改口令
-  function authFailed(message) {
+  // 口令错误 / 被锁定：断开连接，并停在入口页 —— 不进主界面、不请求麦克风。
+  function authFailed(message, code) {
+    var wasRunning = S.running;
     S.noReconnect = true;
     S.running = false;
     S.connected = false;
+    S.authed = false;
     S.isTalking = false;
     S.peerSpeaking = false;
     S.pttHeld = false;
@@ -964,13 +1138,13 @@
       } catch (e) { /* ignore */ }
     }
     if (S.txQueue) S.txQueue.length = 0;
-    DIAG.ws = '口令错误，已断开';
-    gate.classList.remove('hidden');
-    updateUI();
-    renderDiag();
-    try { passInput.focus(); } catch (e) { /* ignore */ }
-    toast(message || '口令错误');
-    alert('口令错误，请确认后重试。\n\n（页面地址里带的 ?pass= 会自动填入，也可以手动修改）');
+    DIAG.ws = '口令未通过，已断开';
+    DIAG.auth = '未通过：' + (message || '口令错误');
+    S.authError = { code: code || 'auth_failed', message: message || '口令错误，请确认后重试' };
+    settleAuth(false, S.authError);
+    if (wasRunning) toast(message || '口令错误');   // 会话中途失效才需要额外提示
+    onAuthFail(S.authError);
+    log('口令校验未通过：' + (message || '') + '（已断开，等待用户修改口令）');
   }
 
   // 强制重连：服务端剔除连接时用的是 terminate（不发 close 帧），
@@ -1026,7 +1200,12 @@
         break;
 
       case 'joined':
-        log('已加入频道：' + msg.channel);
+        S.authed = true;
+        S.authPass = S.helloPass;
+        S.authError = null;
+        settleAuth(true);
+        log('口令校验通过，已加入频道：' + msg.channel);
+        renderAuthState();
         break;
 
       case 'state': {
@@ -1065,8 +1244,9 @@
 
       case 'error':
         log('服务端错误：' + (msg.message || msg.code));
-        if (msg.code === 'auth_failed') authFailed(msg.message || '口令错误');
-        else if (msg.code === 'auth_locked') authFailed(msg.message || '尝试次数过多，请稍后再试');
+        if (msg.code === 'auth_failed' || msg.code === 'auth_locked' || msg.code === 'not_authed') {
+          authFailed(msg.message || '口令错误', msg.code);
+        }
         break;
 
       default:
@@ -1147,12 +1327,58 @@
       return;
     }
 
-    startBtn.disabled = true;
-    startBtn.textContent = '正在请求麦克风…';
+    // 口令改过就必须重新校验（绝不允许拿"旧口令的连接"进主界面）
+    if (!(S.authed && S.connected && S.authPass === S.pass)) {
+      S.authed = false;
+      S.authError = null;
+    }
+
+    // iOS 要求 getUserMedia / AudioContext 在「用户手势」的任务里调用，
+    // 所以先把音频上下文和 iOS 音频会话都解锁好（同步执行），
+    // 之后哪怕先等口令校验的网络往返，也不影响麦克风授权。
+    var audioReady;
+    try {
+      audioReady = initAudio();
+    } catch (e) {
+      audioReady = Promise.reject(e);
+    }
+    if (audioReady && audioReady['catch']) {
+      audioReady['catch'](function (e) { DIAG.mic = '音频初始化失败: ' + (e && e.message ? e.message : e); });
+    }
+    unlockAudioSession();
+
+    if (!S.authed) {
+      // ① 先校验口令：不通过就停在入口页 —— 不请求麦克风、不进主界面
+      setStartBtn('校验口令中…', true);
+      renderAuthState();
+      DIAG.auth = '校验中…';
+      renderDiag();
+      log('先校验口令（口令 ' + (S.pass ? S.pass.length + ' 位' : '空') + '）…');
+      ensureHello();
+      waitAuth(8000).then(function () {
+        setStartBtn('开始 / 连接', false);
+        log('口令校验通过 → 请求麦克风');
+        enterSession(audioReady);
+      })['catch'](function (err) {
+        onAuthFail(err);
+      });
+      return;
+    }
+
+    enterSession(audioReady);
+  }
+
+  // ② 授权麦克风 → ③ 进主界面（只有口令已校验通过才会走到这里）
+  function enterSession(audioReady) {
+    if (!S.authed) {   // 兜底：没通过口令校验绝不进主界面
+      onAuthFail({ code: 'auth_failed', message: '口令未通过校验' });
+      return;
+    }
+    setStartBtn('正在请求麦克风…', true);
     DIAG.mic = '请求中…';
     renderDiag();
 
-    initAudio()
+    Promise.resolve(audioReady)
       .then(startMic)
       .then(function () {
         S.running = true;
@@ -1161,12 +1387,20 @@
         log('会话开始：频道=' + S.channel + (S.name ? '，昵称=' + S.name : ''));
         connect();
         updateUI();
-      })
-      .catch(function (err) {
-        startBtn.disabled = false;
-        startBtn.textContent = '重试';
-        DIAG.mic = '失败: ' + (err && err.name ? err.name : '?') + ' / ' + (err && err.message ? err.message : err);
         renderDiag();
+      })
+      ['catch'](function (err) {
+        var name = (err && err.name) || '';
+        DIAG.mic = '失败: ' + (name || '?') + ' / ' + (err && err.message ? err.message : err);
+        renderDiag();
+        if (S.authed && (name === 'NotAllowedError' || name === 'SecurityError')) {
+          // 口令已经过了，这里只是"用户手势"窗口被网络往返错过 —— 再点一次即可（不会再等网络）
+          setStartBtn('再次点击授权麦克风', false);
+          alert('口令已通过校验。\n\n请再点一次「开始 / 连接」授权麦克风（这次不会再多等）。\n\n' +
+            '如果刚才弹过授权框而你没点「允许」，请到 iPhone 设置 → Safari → 麦克风 里改成「允许」后重试。');
+          return;
+        }
+        setStartBtn('重试', false);
         alert('无法获取麦克风或音频上下文：\n' + (err && err.message ? err.message : err) +
           '\n\n请确认：\n1) 使用 HTTPS 打开页面\n2) 已允许麦克风权限');
       });
@@ -1217,6 +1451,18 @@
   roomInput.addEventListener('input', function () { userEdited = true; });
   nameInput.addEventListener('input', function () { userEdited = true; });
   passInput.addEventListener('input', function () { userEdited = true; });
+  // 口令改完（失焦）顺手校验一次：这样点「开始」时通常已经通过，麦克风授权不用等网络往返
+  passInput.addEventListener('blur', function () {
+    var p = (passInput.value || '').trim();
+    if (!p || S.authed || S.lockTimer) return;
+    if (S.authError && S.authError.code === 'auth_locked') return;
+    S.channel = (roomInput.value || '').trim() || QS.channel || 'default';
+    S.name = (nameInput.value || '').trim() || QS.name || '';
+    S.pass = p;
+    S.authError = null;
+    ensureHello();
+    waitAuth(8000)['catch'](function () { /* 结果已经显示在入口页 */ });
+  });
 
   bindPTT();
   startBtn.addEventListener('click', startSession);
@@ -1236,9 +1482,24 @@
     });
   })();
 
-  loadEndpoint();
   if (resetBtn) resetBtn.addEventListener('click', backToGate);
   if (testBtn) testBtn.addEventListener('click', playTestTone);
+
+  // 入口页一打开就先校验口令（地址里带了 ?pass= 时，也就是二维码进来的情况）。
+  // 这样点「开始」时口令往往已经通过，麦克风授权可以在用户手势里马上发起 ——
+  // iOS Safari 要求 getUserMedia 必须在手势内调用，网络往返会错过那个窗口。
+  // （本页在 GitHub Pages 上，必须先读到 endpoint.json 里的当前后端地址，
+  //   否则会去连 kaulie.github.io/ws 这个不存在的地址）
+  loadEndpoint().then(function () {
+    if (!window.isSecureContext || !QS.pass) { renderAuthState(); return; }
+    S.channel = (roomInput.value || '').trim() || QS.channel || 'default';
+    S.name = (nameInput.value || '').trim() || QS.name || '';
+    S.pass = (passInput.value || '').trim() || QS.pass || '';
+    S.authError = null;
+    log('先校验口令（地址里带了 pass）：通过后才请求麦克风、才进界面');
+    ensureHello();
+    waitAuth(12000)['catch'](function () { /* 结果已经显示在入口页 */ });
+  });
 
   // Safari 从 bfcache / 会话恢复页面时，DOM（含已隐藏的入口页）会被原样还原，
   // 但里面的频道/昵称还是上一次会话的值 —— 必须用当前 URL 参数重新校正并重连。
